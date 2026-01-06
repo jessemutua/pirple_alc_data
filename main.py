@@ -10,8 +10,9 @@ from typing import Literal, Optional, Union
 from datetime import datetime
 import uuid
 import json
+import os
 
-API_SECRET = "pirple_mvp_secret_2026_change_me"
+API_SECRET = os.getenv("API_SECRET", "pirple_mvp_secret_2026_change_me")
 
 app = FastAPI(
     title="Pirple Backend MVP",
@@ -19,7 +20,9 @@ app = FastAPI(
     version="0.1.0"
 )
 # === DATABASE SETUP ===
-DATABASE_URL = "postgresql+psycopg2://pirple_user:pirple_pass_123@localhost:5433/pirple_db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set - check Render environment variables")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

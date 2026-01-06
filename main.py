@@ -19,10 +19,20 @@ app = FastAPI(
     description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
     version="0.1.0"
 )
+import os
+
 # === DATABASE SETUP ===
 DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set - check Render environment variables")
+    # Fallback for local development only
+    DATABASE_URL = "postgresql+psycopg2://pirple_user:pirple_pass_123@localhost:5433/pirple_db"
+    print("Warning: Using local fallback DATABASE_URL")
+
+# Render provides postgres:// URLs, SQLAlchemy + psycopg2 needs postgresql+psycopg2://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -34,7 +44,7 @@ class EventLog(Base):
     received_at = Column(DateTime, default=datetime.utcnow)
     event_data = Column(JSONB, nullable=False)
 
-# Create the table
+# Create the table if it doesn't exist
 Base.metadata.create_all(bind=engine)
 # --- Enums and literal types from the architecture ---
 UserMode = Literal["tracking", "sobriety"]

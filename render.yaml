@@ -3,14 +3,14 @@ services:
     name: pirple-backend
     env: python
     plan: free
-    region: oregon  # or singapore if closer to Kenya
+    region: oregon  # Change to 'frankfurt' or 'singapore' if closer to Kenya
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       API_SECRET:
-        generateValue: true
+        generateValue: true  # Render auto-generates a strong secret
 
-  - type: pgsql
-    name: pirple-db
+databases:
+  - name: pirple-db
     plan: free
-    region: oregon
+    region: oregon  # Match the web service region

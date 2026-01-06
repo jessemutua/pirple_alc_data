@@ -12,29 +12,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# === CONFIGURATION ===
-API_SECRET = os.getenv("API_SECRET")
-if not API_SECRET:
-    raise RuntimeError("API_SECRET is not set")
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set")
-
-# Normalize Render Postgres URL
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://", "postgresql+psycopg2://", 1
-    )
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+# === APP ===
+app = FastAPI(
+    title="Pirple Backend MVP",
+    description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
+    version="0.1.0",
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# === CONFIG (deferred) ===
+engine = None
+SessionLocal = None
 Base = declarative_base()
 
 # === DATABASE MODEL ===
@@ -45,15 +32,38 @@ class EventLog(Base):
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     event_data = Column(JSONB, nullable=False)
 
-# === APP ===
-app = FastAPI(
-    title="Pirple Backend MVP",
-    description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
-    version="0.1.0",
-)
-
+# === STARTUP ===
 @app.on_event("startup")
 def startup():
+    global engine, SessionLocal
+
+    API_SECRET = os.getenv("API_SECRET")
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
+    if not API_SECRET:
+        raise RuntimeError("API_SECRET is not set")
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set")
+
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace(
+            "postgres://", "postgresql+psycopg2://", 1
+        )
+
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+    )
+
+    SessionLocal = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=engine,
+    )
+
     Base.metadata.create_all(bind=engine)
 
 # === SCHEMA ===
@@ -140,15 +150,18 @@ AllowedEvent = Union[
 
 # === ROUTES ===
 @app.get("/")
-def read_root():
-    return {"message": "Pirple Backend is running"}
+def health():
+    return {"status": "ok"}
 
 @app.post("/events")
 async def ingest_event(
     event: AllowedEvent,
     x_api_secret: Optional[str] = Header(None, alias="X-API-Secret"),
 ):
-    if x_api_secret != API_SECRET:
+    if not SessionLocal:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    if x_api_secret != os.getenv("API_SECRET"):
         raise HTTPException(status_code=401, detail="Invalid API secret")
 
     db = SessionLocal()

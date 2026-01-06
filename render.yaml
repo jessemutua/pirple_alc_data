@@ -3,12 +3,12 @@ services:
     name: pirple-backend
     env: python
     plan: free
-    region: oregon  # Change to 'frankfurt' or 'singapore' if closer to Kenya
+    region: oregon  # or singapore/frankfurt for lower latency to Kenya
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
-      API_SECRET:
-        generateValue: true  # Render auto-generates a strong secret
+      - key: API_SECRET
+        generateValue: true  # Render auto-generates a strong random secret
 
 databases:
   - name: pirple-db

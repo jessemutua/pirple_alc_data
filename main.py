@@ -1,35 +1,35 @@
+import os
 import json
+import uuid
+from datetime import datetime
+from typing import Literal, Optional, Union
+
+from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel, Field, validator
+
 from sqlalchemy import create_engine, Column, Integer, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, status, Header
-from pydantic import BaseModel, Field, validator
-from typing import Literal, Optional, Union
-from datetime import datetime
-import uuid
-import json
-import os
 
-API_SECRET = os.getenv("API_SECRET", "pirple_mvp_secret_2026_change_me")
+# === CONFIGURATION ===
+API_SECRET = os.getenv("API_SECRET", "pirple_mvp_secret_2026_change_me_local_fallback")
 
 app = FastAPI(
     title="Pirple Backend MVP",
     description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
     version="0.1.0"
 )
-import os
 
 # === DATABASE SETUP ===
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Local fallback only — never used on Render
 if not DATABASE_URL:
-    # Fallback for local development only
     DATABASE_URL = "postgresql+psycopg2://pirple_user:pirple_pass_123@localhost:5433/pirple_db"
-    print("Warning: Using local fallback DATABASE_URL")
+    print("WARNING: Using local fallback database (only for development)")
 
-# Render provides postgres:// URLs, SQLAlchemy + psycopg2 needs postgresql+psycopg2://
+# Render provides postgres:// — SQLAlchemy + psycopg2 needs postgresql+psycopg2://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 
@@ -39,14 +39,14 @@ Base = declarative_base()
 
 class EventLog(Base):
     __tablename__ = "events"
-
     id = Column(Integer, primary_key=True, index=True)
     received_at = Column(DateTime, default=datetime.utcnow)
     event_data = Column(JSONB, nullable=False)
 
-# Create the table if it doesn't exist
+# Create table on startup
 Base.metadata.create_all(bind=engine)
-# --- Enums and literal types from the architecture ---
+
+# === SCHEMA DEFINITIONS ===
 UserMode = Literal["tracking", "sobriety"]
 DrinkCategory = Literal["beer", "wine", "spirits", "other"]
 QuantityBucket = Literal["1-2", "3-4", "5-6", "7+"]
@@ -55,7 +55,6 @@ MoodValence = Literal["very_negative", "negative", "neutral", "positive", "very_
 Platform = Literal["ios", "android"]
 EventType = Literal["check_in_created", "mode_changed", "consent_updated"]
 
-# --- Base event envelope ---
 class ConsentState(BaseModel):
     data_contribution: bool
     version: str = "1.0"
@@ -85,11 +84,10 @@ class BaseEvent(BaseModel):
             raise ValueError("Events can only be ingested if data_contribution is true")
         return v
 
-# --- Specific payloads ---
 class CheckInPayload(BaseModel):
     mode: UserMode
-    date_local: str  # YYYY-MM-DD
-    consumption: dict  # Will validate inside the full event
+    date_local: str
+    consumption: dict
     mood: dict
     notes_present: bool
 
@@ -101,10 +99,9 @@ class ConsentUpdatedPayload(BaseModel):
     data_contribution: bool
     reason: Literal["initial", "user_change"]
 
-# --- Full event models ---
 class CheckInCreatedEvent(BaseEvent):
     event_type: Literal["check_in_created"] = "check_in_created"
-    payload: dict  # We'll accept raw dict for now, refine later
+    payload: CheckInPayload
 
 class ModeChangedEvent(BaseEvent):
     event_type: Literal["mode_changed"] = "mode_changed"
@@ -114,9 +111,9 @@ class ConsentUpdatedEvent(BaseEvent):
     event_type: Literal["consent_updated"] = "consent_updated"
     payload: ConsentUpdatedPayload
 
-# Union of all allowed events
 AllowedEvent = Union[CheckInCreatedEvent, ModeChangedEvent, ConsentUpdatedEvent]
 
+# === ROUTES ===
 @app.get("/")
 def read_root():
     return {"message": "Pirple Backend is running! 👋"}
@@ -124,10 +121,11 @@ def read_root():
 @app.post("/events")
 async def ingest_event(
     event: AllowedEvent,
-    x_api_secret: str = Header(None, alias="X-API-Secret")
+    x_api_secret: Optional[str] = Header(None, alias="X-API-Secret")
 ):
     if x_api_secret != API_SECRET:
         raise HTTPException(status_code=401, detail="Invalid or missing API secret")
+
     db = SessionLocal()
     try:
         db_event = EventLog(event_data=event.model_dump())

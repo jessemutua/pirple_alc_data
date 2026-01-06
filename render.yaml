@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: pirple-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      API_SECRET:
+        generateValue: true  # Render will auto-generate a strong secret
+
+databases:
+  - name: pirple-db
+    plan: free

@@ -7,6 +7,8 @@ from typing import Literal, Optional, Union
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field, validator
 
+from cors import add_cors_middleware
+
 from sqlalchemy import create_engine, Column, Integer, DateTime, Boolean, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
@@ -18,6 +20,9 @@ app = FastAPI(
     description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
     version="0.1.0",
 )
+
+# === CORS ===
+add_cors_middleware(app)
 
 # === CONFIG (deferred) ===
 engine = None

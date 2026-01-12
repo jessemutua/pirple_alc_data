@@ -3,16 +3,16 @@ services:
     name: pirple-backend
     env: python
     plan: free
-    region: oregon
+    region: oregon  # Change to 'singapore' or 'frankfurt' if you want lower latency to Kenya
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: API_SECRET
         generateValue: true
     databases:
-      - name: pirple-db
+      - name: pirple-db  # This line auto-connects the DB and sets DATABASE_URL
 
 databases:
   - name: pirple-db
     plan: free
-    region: oregon
+    region: oregon  # Must match web service region

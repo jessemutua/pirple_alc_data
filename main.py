@@ -7,7 +7,7 @@ from typing import Literal, Optional, Union
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field, validator
 
-from sqlalchemy import create_engine, Column, Integer, DateTime
+from sqlalchemy import create_engine, Column, Integer, DateTime, Boolean, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -31,6 +31,20 @@ class EventLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     event_data = Column(JSONB, nullable=False)
+
+class DrinkLog(Base):
+    __tablename__ = "drink_logs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=False)
+    date = Column(String, nullable=False)
+    drank = Column(Boolean, nullable=False)
+    drink_count = Column(Integer, nullable=True)
+    drinks = Column(JSONB, nullable=True)
+    time_windows = Column(JSONB, nullable=True)
+    notes = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 # === STARTUP ===
 @app.on_event("startup")
@@ -129,6 +143,15 @@ class ConsentUpdatedPayload(BaseModel):
     data_contribution: bool
     reason: Literal["initial", "user_change"]
 
+class DrinkLogPayload(BaseModel):
+    user_id: str
+    date: str
+    drank: bool
+    drink_count: Optional[int] = None
+    drinks: Optional[dict[str, int]] = None
+    time_windows: Optional[list[str]] = None
+    notes: Optional[str] = None
+
 # === EVENTS ===
 class CheckInCreatedEvent(BaseEvent):
     event_type: Literal["check_in_created"] = "check_in_created"
@@ -180,5 +203,42 @@ async def ingest_event(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to save event")
+    finally:
+        db.close()
+
+@app.post("/drink-logs")
+async def ingest_drink_log(
+    payload: DrinkLogPayload,
+    x_api_secret: Optional[str] = Header(None, alias="X-API-Secret"),
+):
+    if not SessionLocal:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    if x_api_secret != os.getenv("API_SECRET"):
+        raise HTTPException(status_code=401, detail="Invalid API secret")
+
+    db = SessionLocal()
+    try:
+        db_log = DrinkLog(
+            user_id=payload.user_id,
+            date=payload.date,
+            drank=payload.drank,
+            drink_count=payload.drink_count,
+            drinks=payload.drinks,
+            time_windows=payload.time_windows,
+            notes=payload.notes,
+        )
+        db.add(db_log)
+        db.commit()
+        db.refresh(db_log)
+
+        return {
+            "status": "accepted",
+            "log_id": db_log.id,
+            "created_at": db_log.created_at.isoformat(),
+        }
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to save drink log")
     finally:
         db.close()

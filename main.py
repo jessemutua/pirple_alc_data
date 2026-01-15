@@ -1,41 +1,75 @@
 import os
-import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Optional, Union
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, validator
+from jose import jwt, JWTError
+from passlib.context import CryptContext
 
 from cors import add_cors_middleware
 
-from sqlalchemy import create_engine, Column, Integer, DateTime, Boolean, String
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    DateTime,
+    Boolean,
+    String,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# === APP ===
+# ======================
+# APP
+# ======================
 app = FastAPI(
     title="Pirple Backend MVP",
-    description="Privacy-first event ingestion API for policy-grade alcohol consumption data",
-    version="0.1.0",
+    description="Privacy-first event ingestion API",
+    version="0.3.0",
 )
 
-# === CORS ===
 add_cors_middleware(app)
 
-# === CONFIG (deferred) ===
+# ======================
+# SECURITY
+# ======================
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+
+# ======================
+# DB
+# ======================
 engine = None
 SessionLocal = None
 Base = declarative_base()
 
-# === DATABASE MODEL ===
+# ======================
+# MODELS
+# ======================
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EventLog(Base):
     __tablename__ = "events"
 
     id = Column(Integer, primary_key=True, index=True)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     event_data = Column(JSONB, nullable=False)
+
 
 class DrinkLog(Base):
     __tablename__ = "drink_logs"
@@ -44,14 +78,21 @@ class DrinkLog(Base):
     user_id = Column(String, nullable=False)
     date = Column(String, nullable=False)
     drank = Column(Boolean, nullable=False)
-    drink_count = Column(Integer, nullable=True)
-    drinks = Column(JSONB, nullable=True)
-    time_windows = Column(JSONB, nullable=True)
-    notes = Column(String, nullable=True)
+    drink_count = Column(Integer)
+    drinks = Column(JSONB)
+    time_windows = Column(JSONB)
+    notes = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
-# === STARTUP ===
+# ======================
+# STARTUP
+# ======================
 @app.on_event("startup")
 def startup():
     global engine, SessionLocal
@@ -61,7 +102,6 @@ def startup():
 
     if not API_SECRET:
         raise RuntimeError("API_SECRET is not set")
-
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
 
@@ -77,79 +117,58 @@ def startup():
         max_overflow=10,
     )
 
-    SessionLocal = sessionmaker(
-        autocommit=False,
-        autoflush=False,
-        bind=engine,
-    )
-
+    SessionLocal = sessionmaker(bind=engine)
     Base.metadata.create_all(bind=engine)
 
-# === SCHEMA ===
-UserMode = Literal["tracking", "sobriety"]
-DrinkCategory = Literal["beer", "wine", "spirits", "other"]
-QuantityBucket = Literal["1-2", "3-4", "5-6", "7+"]
-TimeWindow = Literal["afternoon", "evening", "night", "late_night"]
-MoodValence = Literal["very_negative", "negative", "neutral", "positive", "very_positive"]
-Platform = Literal["ios", "android"]
-EventType = Literal["check_in_created", "mode_changed", "consent_updated"]
+# ======================
+# HELPERS
+# ======================
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
 
-class ConsentState(BaseModel):
-    data_contribution: bool
-    version: str = "1.0"
 
-class ClientInfo(BaseModel):
-    platform: Platform
-    app_version: str
+def verify_password(password: str, hashed: str) -> bool:
+    return pwd_context.verify(password, hashed)
 
-class GeoInfo(BaseModel):
-    country: str = "KE"
-    county: Optional[str] = None
 
-class BaseEvent(BaseModel):
-    event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event_type: EventType
-    event_version: str = "1.0"
-    event_time_utc: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-    anonymous_user_id: str
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    consent_state: ConsentState
-    client: ClientInfo
-    geo: GeoInfo
+def create_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-    @validator("consent_state")
-    def consent_must_be_true(cls, v):
-        if not v.data_contribution:
-            raise ValueError("data_contribution must be true")
-        return v
 
-# === PAYLOADS ===
-class Consumption(BaseModel):
-    occurred: bool
-    drink_category: Optional[DrinkCategory] = None
-    quantity_bucket: Optional[QuantityBucket] = None
-    time_window: Optional[TimeWindow] = None
+def get_current_user_id(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+) -> str:
+    try:
+        payload = jwt.decode(
+            creds.credentials,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+        )
+        return payload["sub"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-class Mood(BaseModel):
-    valence: MoodValence
 
-class CheckInPayload(BaseModel):
-    mode: UserMode
-    date_local: str
-    consumption: Consumption
-    mood: Mood
-    notes_present: bool
+def serialize_user(user: User):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at.isoformat(),
+    }
 
-class ModeChangedPayload(BaseModel):
-    previous_mode: UserMode
-    new_mode: UserMode
+# ======================
+# SCHEMAS
+# ======================
+class AuthPayload(BaseModel):
+    email: str
+    password: str
 
-class ConsentUpdatedPayload(BaseModel):
-    data_contribution: bool
-    reason: Literal["initial", "user_change"]
 
 class DrinkLogPayload(BaseModel):
-    user_id: str
     date: str
     drank: bool
     drink_count: Optional[int] = None
@@ -157,93 +176,97 @@ class DrinkLogPayload(BaseModel):
     time_windows: Optional[list[str]] = None
     notes: Optional[str] = None
 
-# === EVENTS ===
-class CheckInCreatedEvent(BaseEvent):
-    event_type: Literal["check_in_created"] = "check_in_created"
-    payload: CheckInPayload
-
-class ModeChangedEvent(BaseEvent):
-    event_type: Literal["mode_changed"] = "mode_changed"
-    payload: ModeChangedPayload
-
-class ConsentUpdatedEvent(BaseEvent):
-    event_type: Literal["consent_updated"] = "consent_updated"
-    payload: ConsentUpdatedPayload
-
-AllowedEvent = Union[
-    CheckInCreatedEvent,
-    ModeChangedEvent,
-    ConsentUpdatedEvent,
-]
-
-# === ROUTES ===
+# ======================
+# ROUTES
+# ======================
 @app.get("/")
 def health():
     return {"status": "ok"}
 
-@app.post("/events")
-async def ingest_event(
-    event: AllowedEvent,
-    x_api_secret: Optional[str] = Header(None, alias="X-API-Secret"),
-):
-    if not SessionLocal:
-        raise HTTPException(status_code=503, detail="Database not initialized")
-
-    if x_api_secret != os.getenv("API_SECRET"):
-        raise HTTPException(status_code=401, detail="Invalid API secret")
-
+# ---------- AUTH ----------
+@app.post("/auth/register")
+def register(payload: AuthPayload):
     db = SessionLocal()
     try:
-        db_event = EventLog(event_data=event.dict())
-        db.add(db_event)
+        if db.query(User).filter(User.email == payload.email).first():
+            raise HTTPException(400, "Email already exists")
+
+        user = User(
+            email=payload.email,
+            password_hash=hash_password(payload.password),
+        )
+        db.add(user)
         db.commit()
-        db.refresh(db_event)
+        db.refresh(user)
 
         return {
-            "status": "accepted",
-            "event_id": event.event_id,
-            "database_id": db_event.id,
-            "saved_at": db_event.received_at.isoformat(),
+            "access_token": create_token(user.id),
+            "token_type": "bearer",
+            "user": serialize_user(user),
         }
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to save event")
     finally:
         db.close()
 
-@app.post("/drink-logs")
-async def ingest_drink_log(
-    payload: DrinkLogPayload,
+
+@app.post("/auth/login")
+def login(payload: AuthPayload):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == payload.email).first()
+        if not user or not verify_password(payload.password, user.password_hash):
+            raise HTTPException(401, "Invalid credentials")
+
+        return {
+            "access_token": create_token(user.id),
+            "token_type": "bearer",
+            "user": serialize_user(user),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/auth/me")
+def me(user_id: str = Depends(get_current_user_id)):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        return serialize_user(user)
+    finally:
+        db.close()
+
+# ---------- EVENTS (API SECRET) ----------
+@app.post("/events")
+async def ingest_event(
+    event: dict,
     x_api_secret: Optional[str] = Header(None, alias="X-API-Secret"),
 ):
-    if not SessionLocal:
-        raise HTTPException(status_code=503, detail="Database not initialized")
-
     if x_api_secret != os.getenv("API_SECRET"):
         raise HTTPException(status_code=401, detail="Invalid API secret")
 
     db = SessionLocal()
     try:
-        db_log = DrinkLog(
-            user_id=payload.user_id,
-            date=payload.date,
-            drank=payload.drank,
-            drink_count=payload.drink_count,
-            drinks=payload.drinks,
-            time_windows=payload.time_windows,
-            notes=payload.notes,
-        )
-        db.add(db_log)
+        db_event = EventLog(event_data=event)
+        db.add(db_event)
         db.commit()
-        db.refresh(db_log)
+        return {"status": "accepted"}
+    finally:
+        db.close()
 
-        return {
-            "status": "accepted",
-            "log_id": db_log.id,
-            "created_at": db_log.created_at.isoformat(),
-        }
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to save drink log")
+# ---------- DRINK LOGS (JWT) ----------
+@app.post("/drink-logs")
+def ingest_drink_log(
+    payload: DrinkLogPayload,
+    user_id: str = Depends(get_current_user_id),
+):
+    db = SessionLocal()
+    try:
+        log = DrinkLog(user_id=user_id, **payload.dict())
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        return {"log_id": log.id}
     finally:
         db.close()

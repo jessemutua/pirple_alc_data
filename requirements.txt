@@ -18,3 +18,4 @@ typing_extensions==4.15.0
 uvicorn==0.40.0
 python-jose[cryptography]
 passlib[bcrypt]
+email-validator

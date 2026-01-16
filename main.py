@@ -126,15 +126,26 @@ def startup():
 # ======================
 def hash_password(password: str) -> str:
     password = password.strip()
-    print("HASH PASSWORD TYPE:", type(password))
-    print("HASH PASSWORD LENGTH:", len(password))
-    print("HASH PASSWORD PREVIEW:", repr(password[:50]))
+    password_bytes = password.encode("utf-8")
+
+    if len(password_bytes) > 72:
+        raise HTTPException(
+            status_code=400,
+            detail="Password too long (max 72 bytes)",
+        )
+
     return pwd_context.hash(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
     password = password.strip()
-    return pwd_context.verify(password[:72], hashed)
+    password_bytes = password.encode("utf-8")
+
+    if len(password_bytes) > 72:
+        password = password_bytes[:72].decode("utf-8", errors="ignore")
+
+    return pwd_context.verify(password, hashed)
+
 
 def create_token(user_id: str) -> str:
     payload = {

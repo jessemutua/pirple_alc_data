@@ -38,7 +38,7 @@ add_cors_middleware(app)
 # ======================
 # SECURITY
 # ======================
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 security = HTTPBearer()
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
@@ -125,27 +125,18 @@ def startup():
 # HELPERS
 # ======================
 def hash_password(password: str) -> str:
-    password = password.strip()
-    password_bytes = password.encode("utf-8")
+    if not isinstance(password, str):
+        raise HTTPException(400, "Invalid password type")
 
-    if len(password_bytes) > 72:
-        raise HTTPException(
-            status_code=400,
-            detail="Password too long (max 72 bytes)",
-        )
+    password = password.strip()
+
+    if not password:
+        raise HTTPException(400, "Password cannot be empty")
 
     return pwd_context.hash(password)
 
-
 def verify_password(password: str, hashed: str) -> bool:
-    password = password.strip()
-    password_bytes = password.encode("utf-8")
-
-    if len(password_bytes) > 72:
-        password = password_bytes[:72].decode("utf-8", errors="ignore")
-
-    return pwd_context.verify(password, hashed)
-
+    return pwd_context.verify(password.strip(), hashed)
 
 def create_token(user_id: str) -> str:
     payload = {
@@ -181,7 +172,7 @@ def serialize_user(user: User):
 # ======================
 class AuthPayload(BaseModel):
     email: EmailStr
-    password: constr(min_length=6, max_length=72)
+    password: constr(min_length=8, max_length=128)
 
 
 class DrinkLogPayload(BaseModel):

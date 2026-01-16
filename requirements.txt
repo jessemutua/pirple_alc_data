@@ -17,5 +17,6 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.40.0
 python-jose[cryptography]
-passlib[bcrypt]
 email-validator
+passlib[argon2]
+argon2-cffi

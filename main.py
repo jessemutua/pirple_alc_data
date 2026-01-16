@@ -124,12 +124,17 @@ def startup():
 # HELPERS
 # ======================
 def hash_password(password: str) -> str:
+    print("HASH PASSWORD TYPE:", type(password))
+    print("HASH PASSWORD LENGTH:", len(password))
+    print("HASH PASSWORD PREVIEW:", repr(password[:50]))
     return pwd_context.hash(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
+    print("VERIFY PASSWORD TYPE:", type(password))
+    print("VERIFY PASSWORD LENGTH:", len(password))
+    print("VERIFY PASSWORD PREVIEW:", repr(password[:50]))
     return pwd_context.verify(password, hashed)
-
 
 def create_token(user_id: str) -> str:
     payload = {

@@ -217,10 +217,20 @@ def register(payload: AuthPayload):
 
 @app.post("/auth/login")
 def login(payload: AuthPayload):
+    print("LOGIN START", payload.email)
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == payload.email).first()
-        if not user or not verify_password(payload.password, user.password_hash):
+        print("USER FOUND", bool(user))
+
+        if not user:
+            raise HTTPException(401, "Invalid credentials")
+
+        print("VERIFY START")
+        ok = verify_password(payload.password, user.password_hash)
+        print("VERIFY DONE")
+
+        if not ok:
             raise HTTPException(401, "Invalid credentials")
 
         return {
@@ -230,6 +240,7 @@ def login(payload: AuthPayload):
         }
     finally:
         db.close()
+
 
 
 @app.get("/auth/me")
@@ -275,5 +286,43 @@ def ingest_drink_log(
         db.commit()
         db.refresh(log)
         return {"log_id": log.id}
+    finally:
+        db.close()
+from sqlalchemy import and_
+
+@app.get("/drink-logs/month")
+def get_month_logs(
+    month: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    month format: YYYY-MM
+    """
+    db = SessionLocal()
+    try:
+        start = datetime.strptime(month + "-01", "%Y-%m-%d")
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+
+        logs = (
+            db.query(DrinkLog)
+            .filter(DrinkLog.user_id == user_id)
+            .filter(and_(
+                DrinkLog.created_at >= start,
+                DrinkLog.created_at < end,
+            ))
+            .all()
+        )
+
+        result = {}
+        for log in logs:
+            result[log.date] = {
+                "drank": log.drank,
+                "drink_count": log.drink_count,
+            }
+
+        return result
     finally:
         db.close()

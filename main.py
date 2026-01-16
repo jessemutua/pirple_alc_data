@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from pydantic import EmailStr, constr
 
 # ======================
 # APP
@@ -124,6 +125,7 @@ def startup():
 # HELPERS
 # ======================
 def hash_password(password: str) -> str:
+    password = password.strip()
     print("HASH PASSWORD TYPE:", type(password))
     print("HASH PASSWORD LENGTH:", len(password))
     print("HASH PASSWORD PREVIEW:", repr(password[:50]))
@@ -131,10 +133,8 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    print("VERIFY PASSWORD TYPE:", type(password))
-    print("VERIFY PASSWORD LENGTH:", len(password))
-    print("VERIFY PASSWORD PREVIEW:", repr(password[:50]))
-    return pwd_context.verify(password, hashed)
+    password = password.strip()
+    return pwd_context.verify(password[:72], hashed)
 
 def create_token(user_id: str) -> str:
     payload = {
@@ -169,8 +169,8 @@ def serialize_user(user: User):
 # SCHEMAS
 # ======================
 class AuthPayload(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: constr(min_length=6, max_length=72)
 
 
 class DrinkLogPayload(BaseModel):

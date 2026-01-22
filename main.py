@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, constr, EmailStr
 from jose import jwt, JWTError
@@ -18,22 +18,23 @@ from sqlalchemy import (
     DateTime,
     Boolean,
     String,
-    and_,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+
 
 # ======================
 # APP
 # ======================
 app = FastAPI(
     title="Pirple Backend MVP",
-    description="Privacy-first event ingestion API",
-    version="0.4.0",
+    description="Privacy-first alcohol awareness API",
+    version="1.0.0",
 )
 
 add_cors_middleware(app)
+
 
 # ======================
 # SECURITY
@@ -45,12 +46,14 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
+
 # ======================
 # DB
 # ======================
 engine = None
 SessionLocal = None
 Base = declarative_base()
+
 
 # ======================
 # MODELS
@@ -62,14 +65,6 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class EventLog(Base):
-    __tablename__ = "events"
-
-    id = Column(Integer, primary_key=True, index=True)
-    received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    event_data = Column(JSONB, nullable=False)
 
 
 class DrinkLog(Base):
@@ -91,6 +86,7 @@ class DrinkLog(Base):
         nullable=False,
     )
 
+
 # ======================
 # STARTUP
 # ======================
@@ -98,11 +94,7 @@ class DrinkLog(Base):
 def startup():
     global engine, SessionLocal
 
-    API_SECRET = os.getenv("API_SECRET")
     DATABASE_URL = os.getenv("DATABASE_URL")
-
-    if not API_SECRET:
-        raise RuntimeError("API_SECRET is not set")
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
 
@@ -111,15 +103,10 @@ def startup():
             "postgres://", "postgresql+psycopg2://", 1
         )
 
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-    )
-
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     SessionLocal = sessionmaker(bind=engine)
     Base.metadata.create_all(bind=engine)
+
 
 # ======================
 # HELPERS
@@ -164,8 +151,9 @@ def serialize_user(user: User):
         "created_at": user.created_at.isoformat(),
     }
 
+
 # ======================
-# ANALYTICS ENGINE ✅
+# ANALYTICS ENGINE
 # ======================
 def build_analytics(logs: list[DrinkLog]) -> dict:
     days_tracked = len({log.date for log in logs})
@@ -187,14 +175,14 @@ def build_analytics(logs: list[DrinkLog]) -> dict:
     }
 
     for log in logs:
-        if log.drinks:
+        if log.drank and log.drinks:
             for k, v in log.drinks.items():
                 if k in drink_type:
                     drink_type[k] += v
                 else:
                     drink_type["other"] += v
 
-        if log.drink_count:
+        if log.drank and log.drink_count:
             c = log.drink_count
             if c <= 2:
                 quantity["oneToTwo"] += 1
@@ -205,9 +193,9 @@ def build_analytics(logs: list[DrinkLog]) -> dict:
             else:
                 quantity["sevenPlus"] += 1
 
-        if log.time_windows:
+        if log.drank and log.time_windows:
             for t in log.time_windows:
-                key = t.lower()
+                key = t.lower().replace(" ", "")
                 if key in time_window:
                     time_window[key] += 1
 
@@ -230,6 +218,7 @@ def build_analytics(logs: list[DrinkLog]) -> dict:
         },
     }
 
+
 # ======================
 # SCHEMAS
 # ======================
@@ -246,6 +235,7 @@ class DrinkLogPayload(BaseModel):
     time_windows: Optional[list[str]] = None
     notes: Optional[str] = None
 
+
 # ======================
 # ROUTES
 # ======================
@@ -253,7 +243,7 @@ class DrinkLogPayload(BaseModel):
 def health():
     return {"status": "ok"}
 
-# ---------- AUTH ----------
+
 @app.post("/auth/register")
 def register(payload: AuthPayload):
     db = SessionLocal()
@@ -306,7 +296,7 @@ def me(user_id: str = Depends(get_current_user_id)):
     finally:
         db.close()
 
-# ---------- DRINK LOGS ----------
+
 @app.post("/drink-logs")
 def ingest_drink_log(
     payload: DrinkLogPayload,
@@ -314,15 +304,59 @@ def ingest_drink_log(
 ):
     db = SessionLocal()
     try:
+        existing = (
+            db.query(DrinkLog)
+            .filter(DrinkLog.user_id == user_id)
+            .filter(DrinkLog.date == payload.date)
+            .first()
+        )
+
+        if existing:
+            for k, v in payload.dict().items():
+                setattr(existing, k, v)
+            db.commit()
+            return {"log_id": existing.id}
+
         log = DrinkLog(user_id=user_id, **payload.dict())
         db.add(log)
         db.commit()
         db.refresh(log)
+
         return {"log_id": log.id}
     finally:
         db.close()
 
-# ---------- ANALYTICS ✅ ----------
+
+@app.get("/drink-logs/month")
+def get_month_logs(
+    month: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    db = SessionLocal()
+    try:
+        start = datetime.strptime(month + "-01", "%Y-%m-%d")
+        end = (start + timedelta(days=32)).replace(day=1)
+
+        logs = (
+            db.query(DrinkLog)
+            .filter(DrinkLog.user_id == user_id)
+            .filter(DrinkLog.date >= start.strftime("%Y-%m-%d"))
+            .filter(DrinkLog.date < end.strftime("%Y-%m-%d"))
+            .all()
+        )
+
+        result = {}
+        for log in logs:
+            result[log.date] = {
+                "drank": log.drank,
+                "drink_count": log.drink_count,
+            }
+
+        return result
+    finally:
+        db.close()
+
+
 @app.get("/analytics")
 def get_analytics(
     days: int = 30,
@@ -330,13 +364,13 @@ def get_analytics(
 ):
     db = SessionLocal()
     try:
-        since = datetime.utcnow() - timedelta(days=days)
+        since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
 
         logs = (
             db.query(DrinkLog)
             .filter(DrinkLog.user_id == user_id)
-            .filter(DrinkLog.created_at >= since)
-            .order_by(DrinkLog.created_at.asc())
+            .filter(DrinkLog.date >= since)
+            .order_by(DrinkLog.date.asc())
             .all()
         )
 

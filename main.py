@@ -1,11 +1,11 @@
 import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Literal, Optional, Union
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, constr, EmailStr
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
@@ -18,11 +18,11 @@ from sqlalchemy import (
     DateTime,
     Boolean,
     String,
+    and_,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from pydantic import EmailStr, constr
 
 # ======================
 # APP
@@ -30,7 +30,7 @@ from pydantic import EmailStr, constr
 app = FastAPI(
     title="Pirple Backend MVP",
     description="Privacy-first event ingestion API",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 add_cors_middleware(app)
@@ -125,18 +125,15 @@ def startup():
 # HELPERS
 # ======================
 def hash_password(password: str) -> str:
-    if not isinstance(password, str):
-        raise HTTPException(400, "Invalid password type")
-
     password = password.strip()
-
     if not password:
         raise HTTPException(400, "Password cannot be empty")
-
     return pwd_context.hash(password)
+
 
 def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password.strip(), hashed)
+
 
 def create_token(user_id: str) -> str:
     payload = {
@@ -165,6 +162,72 @@ def serialize_user(user: User):
         "id": user.id,
         "email": user.email,
         "created_at": user.created_at.isoformat(),
+    }
+
+# ======================
+# ANALYTICS ENGINE ✅
+# ======================
+def build_analytics(logs: list[DrinkLog]) -> dict:
+    days_tracked = len({log.date for log in logs})
+    drinking_days = sum(1 for log in logs if log.drank)
+    sober_days = sum(1 for log in logs if not log.drank)
+
+    drink_type = {"beer": 0, "wine": 0, "spirits": 0, "other": 0}
+    quantity = {
+        "oneToTwo": 0,
+        "threeToFour": 0,
+        "fiveToSix": 0,
+        "sevenPlus": 0,
+    }
+    time_window = {
+        "afternoon": 0,
+        "evening": 0,
+        "night": 0,
+        "lateNight": 0,
+    }
+
+    for log in logs:
+        if log.drinks:
+            for k, v in log.drinks.items():
+                if k in drink_type:
+                    drink_type[k] += v
+                else:
+                    drink_type["other"] += v
+
+        if log.drink_count:
+            c = log.drink_count
+            if c <= 2:
+                quantity["oneToTwo"] += 1
+            elif c <= 4:
+                quantity["threeToFour"] += 1
+            elif c <= 6:
+                quantity["fiveToSix"] += 1
+            else:
+                quantity["sevenPlus"] += 1
+
+        if log.time_windows:
+            for t in log.time_windows:
+                key = t.lower()
+                if key in time_window:
+                    time_window[key] += 1
+
+    return {
+        "summary": {
+            "daysTracked": days_tracked,
+            "drinkingDays": drinking_days,
+            "soberDays": sober_days,
+        },
+        "drinkingVsSober": {
+            "drinking": drinking_days,
+            "sober": sober_days,
+        },
+        "drinkType": drink_type,
+        "quantity": quantity,
+        "timeWindow": time_window,
+        "moodTrend": {
+            "text": "Mood analytics coming soon.",
+            "direction": "stable",
+        },
     }
 
 # ======================
@@ -217,20 +280,10 @@ def register(payload: AuthPayload):
 
 @app.post("/auth/login")
 def login(payload: AuthPayload):
-    print("LOGIN START", payload.email)
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == payload.email).first()
-        print("USER FOUND", bool(user))
-
-        if not user:
-            raise HTTPException(401, "Invalid credentials")
-
-        print("VERIFY START")
-        ok = verify_password(payload.password, user.password_hash)
-        print("VERIFY DONE")
-
-        if not ok:
+        if not user or not verify_password(payload.password, user.password_hash):
             raise HTTPException(401, "Invalid credentials")
 
         return {
@@ -242,7 +295,6 @@ def login(payload: AuthPayload):
         db.close()
 
 
-
 @app.get("/auth/me")
 def me(user_id: str = Depends(get_current_user_id)):
     db = SessionLocal()
@@ -250,30 +302,11 @@ def me(user_id: str = Depends(get_current_user_id)):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(404, "User not found")
-
         return serialize_user(user)
     finally:
         db.close()
 
-# ---------- EVENTS (API SECRET) ----------
-@app.post("/events")
-async def ingest_event(
-    event: dict,
-    x_api_secret: Optional[str] = Header(None, alias="X-API-Secret"),
-):
-    if x_api_secret != os.getenv("API_SECRET"):
-        raise HTTPException(status_code=401, detail="Invalid API secret")
-
-    db = SessionLocal()
-    try:
-        db_event = EventLog(event_data=event)
-        db.add(db_event)
-        db.commit()
-        return {"status": "accepted"}
-    finally:
-        db.close()
-
-# ---------- DRINK LOGS (JWT) ----------
+# ---------- DRINK LOGS ----------
 @app.post("/drink-logs")
 def ingest_drink_log(
     payload: DrinkLogPayload,
@@ -288,41 +321,25 @@ def ingest_drink_log(
         return {"log_id": log.id}
     finally:
         db.close()
-from sqlalchemy import and_
 
-@app.get("/drink-logs/month")
-def get_month_logs(
-    month: str,
+# ---------- ANALYTICS ✅ ----------
+@app.get("/analytics")
+def get_analytics(
+    days: int = 30,
     user_id: str = Depends(get_current_user_id),
 ):
-    """
-    month format: YYYY-MM
-    """
     db = SessionLocal()
     try:
-        start = datetime.strptime(month + "-01", "%Y-%m-%d")
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
-        else:
-            end = start.replace(month=start.month + 1)
+        since = datetime.utcnow() - timedelta(days=days)
 
         logs = (
             db.query(DrinkLog)
             .filter(DrinkLog.user_id == user_id)
-            .filter(and_(
-                DrinkLog.created_at >= start,
-                DrinkLog.created_at < end,
-            ))
+            .filter(DrinkLog.created_at >= since)
+            .order_by(DrinkLog.created_at.asc())
             .all()
         )
 
-        result = {}
-        for log in logs:
-            result[log.date] = {
-                "drank": log.drank,
-                "drink_count": log.drink_count,
-            }
-
-        return result
+        return build_analytics(logs)
     finally:
         db.close()

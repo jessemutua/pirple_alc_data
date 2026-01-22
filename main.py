@@ -2,6 +2,8 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
+from collections import defaultdict
+from statistics import mean
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -155,67 +157,99 @@ def serialize_user(user: User):
 # ======================
 # ANALYTICS ENGINE
 # ======================
-def build_analytics(logs: list[DrinkLog]) -> dict:
-    days_tracked = len({log.date for log in logs})
-    drinking_days = sum(1 for log in logs if log.drank)
-    sober_days = sum(1 for log in logs if not log.drank)
+def build_analytics(logs: list[DrinkLog], days: int) -> dict:
+    if not logs:
+        return {
+            "meta": {
+                "requestedDays": days,
+                "availableDays": 0,
+                "from": None,
+                "to": None,
+            },
+            "summary": {
+                "daysTracked": 0,
+                "drinkingDays": 0,
+                "soberDays": 0,
+            },
+            "trend": {
+                "daily": [],
+                "rollingAvg": [],
+                "stats": {},
+            },
+            "timePattern": {},
+            "drinkTypes": {},
+        }
 
-    drink_type = {"beer": 0, "wine": 0, "spirits": 0, "other": 0}
-    quantity = {
-        "oneToTwo": 0,
-        "threeToFour": 0,
-        "fiveToSix": 0,
-        "sevenPlus": 0,
+    dates = sorted({log.date for log in logs})
+    available_days = len(dates)
+
+    drinking_days = sum(1 for l in logs if l.drank)
+    sober_days = available_days - drinking_days
+
+    daily = []
+    rolling = []
+    window = []
+
+    for log in logs:
+        count = log.drink_count or 0
+
+        daily.append({
+            "date": log.date,
+            "drank": log.drank,
+            "count": count,
+        })
+
+        window.append(count)
+        if len(window) > 7:
+            window.pop(0)
+
+        rolling.append({
+            "date": log.date,
+            "value": round(mean(window), 2),
+        })
+
+    stats = {
+        "avgPerDay": round(mean([d["count"] for d in daily]), 2),
+        "avgPerDrinkingDay": round(
+            mean([d["count"] for d in daily if d["count"] > 0]), 2
+        ) if drinking_days else 0,
+        "max": max(d["count"] for d in daily),
     }
-    time_window = {
-        "afternoon": 0,
-        "evening": 0,
-        "night": 0,
-        "lateNight": 0,
-    }
+
+    time_pattern = defaultdict(int)
+
+    for log in logs:
+        if log.drank and log.time_windows:
+            for t in log.time_windows:
+                key = t.lower().replace(" ", "")
+                time_pattern[key] += 1
+
+    drink_types = defaultdict(int)
 
     for log in logs:
         if log.drank and log.drinks:
             for k, v in log.drinks.items():
-                if k in drink_type:
-                    drink_type[k] += v
-                else:
-                    drink_type["other"] += v
-
-        if log.drank and log.drink_count:
-            c = log.drink_count
-            if c <= 2:
-                quantity["oneToTwo"] += 1
-            elif c <= 4:
-                quantity["threeToFour"] += 1
-            elif c <= 6:
-                quantity["fiveToSix"] += 1
-            else:
-                quantity["sevenPlus"] += 1
-
-        if log.drank and log.time_windows:
-            for t in log.time_windows:
-                key = t.lower().replace(" ", "")
-                if key in time_window:
-                    time_window[key] += 1
+                drink_types[k.lower()] += v
 
     return {
+        "meta": {
+            "requestedDays": days,
+            "availableDays": available_days,
+            "from": dates[0],
+            "to": dates[-1],
+        },
         "summary": {
-            "daysTracked": days_tracked,
+            "daysTracked": available_days,
             "drinkingDays": drinking_days,
             "soberDays": sober_days,
         },
-        "drinkingVsSober": {
-            "drinking": drinking_days,
-            "sober": sober_days,
+        "trend": {
+            "daily": daily,
+            "rollingAvg": rolling,
+            "stats": stats,
         },
-        "drinkType": drink_type,
-        "quantity": quantity,
-        "timeWindow": time_window,
-        "moodTrend": {
-            "text": "Mood analytics coming soon.",
-            "direction": "stable",
-        },
+        "timePattern": dict(time_pattern),
+        "drinkTypes": dict(drink_types),
     }
 
 
@@ -374,6 +408,6 @@ def get_analytics(
             .all()
         )
 
-        return build_analytics(logs)
+        return build_analytics(logs, days)
     finally:
         db.close()

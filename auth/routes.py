@@ -1,31 +1,58 @@
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, HTTPException
 
-from analytics.service import build_analytics
-from drinks.models import DrinkLog
+from auth.models import User
+from auth.schemas import AuthPayload, AuthResponse
 from core.database import SessionLocal
-from core.deps import get_current_user_id
+from core.security import hash_password, verify_password, create_token
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(prefix="/auth", tags=["auth"])
+print("✅ AUTH ROUTES LOADED")
 
 
-@router.get("")
-def get_analytics(
-    days: int = 30,
-    user_id: str = Depends(get_current_user_id),
-):
+def serialize_user(user: User):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+@router.post("/register", response_model=AuthResponse)
+def register(payload: AuthPayload):
     db = SessionLocal()
     try:
-        since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        if db.query(User).filter(User.email == payload.email).first():
+            raise HTTPException(400, "Email already exists")
 
-        logs = (
-            db.query(DrinkLog)
-            .filter(DrinkLog.user_id == user_id)
-            .filter(DrinkLog.date >= since)
-            .order_by(DrinkLog.date.asc())
-            .all()
+        user = User(
+            email=payload.email,
+            password_hash=hash_password(payload.password),
         )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
-        return build_analytics(logs, days)
+        return {
+            "access_token": create_token(user.id),
+            "token_type": "bearer",
+            "user": serialize_user(user),
+        }
+    finally:
+        db.close()
+
+
+@router.post("/login", response_model=AuthResponse)
+def login(payload: AuthPayload):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == payload.email).first()
+        if not user or not verify_password(payload.password, user.password_hash):
+            raise HTTPException(401, "Invalid credentials")
+
+        return {
+            "access_token": create_token(user.id),
+            "token_type": "bearer",
+            "user": serialize_user(user),
+        }
     finally:
         db.close()

@@ -1,11 +1,15 @@
 import os
 from fastapi import FastAPI
 from core.config import DATABASE_URL
-from auth.routes import router as auth_router
-from drinks.routes import router as drinks_router
-from analytics.routes import router as analytics_router
 from fastapi.middleware.cors import CORSMiddleware
-from core.database import engine, SessionLocal, Base  # Assuming engine, SessionLocal, and Base are in database.py
+from core.database import engine, Base
+
+# ✅ Force module loading
+import auth.routes as auth_routes
+import drinks.routes as drinks_routes
+import analytics.routes as analytics_routes
+
+print("✅ MAIN LOADED")
 
 # Initialize the app
 app = FastAPI(
@@ -16,7 +20,7 @@ app = FastAPI(
 
 # CORS middleware
 origins = [
-    "*",  # Allow all domains (could be restricted to a list of trusted domains)
+    "*",
 ]
 
 app.add_middleware(
@@ -27,20 +31,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register the routers from each feature module
-app.include_router(auth_router)
-app.include_router(drinks_router)
-app.include_router(analytics_router)
+# ✅ Register routers
+app.include_router(auth_routes.router)
+app.include_router(drinks_routes.router)
+app.include_router(analytics_routes.router)
 
 # Start the app
 @app.on_event("startup")
 def startup():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
+
     print(f"Connecting to database at {DATABASE_URL}")
-    
-    # Create all tables in the database
     Base.metadata.create_all(bind=engine)
+
+
 @app.get("/__debug/routes")
 def list_routes():
     return [r.path for r in app.router.routes]

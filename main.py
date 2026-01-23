@@ -41,3 +41,6 @@ def startup():
     
     # Create all tables in the database
     Base.metadata.create_all(bind=engine)
+@app.get("/__debug/routes")
+def list_routes():
+    return [r.path for r in app.router.routes]

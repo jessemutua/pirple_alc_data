@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
+from fastapi import HTTPException
 
 from drinks.models import DrinkLog
 from drinks.schemas import DrinkLogPayload
@@ -66,5 +67,35 @@ def get_month_logs(
             }
 
         return result
+    finally:
+        db.close()
+
+@router.get("/day")
+def get_day_log(
+    date: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    db = SessionLocal()
+    try:
+        log = (
+            db.query(DrinkLog)
+            .filter(DrinkLog.user_id == user_id)
+            .filter(DrinkLog.date == date)
+            .first()
+        )
+
+        if not log:
+            # Frontend will treat this as "no log exists"
+            raise HTTPException(status_code=404, detail="No log for that date")
+
+        return {
+            "date": log.date,
+            "drank": log.drank,
+            "drink_count": log.drink_count,
+            "drinks": log.drinks,
+            "time_windows": log.time_windows,
+            "notes": log.notes,
+            # IMPORTANT: do NOT return user_id if you want non-PII responses
+        }
     finally:
         db.close()

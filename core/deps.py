@@ -1,20 +1,7 @@
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
+# core/deps.py
+# Thin compatibility layer so existing imports (from core.deps import get_current_user_id)
+# keep working while the single implementation lives in core.security.
 
-from core.config import JWT_SECRET, JWT_ALGORITHM
+from core.security import get_current_user_id
 
-security = HTTPBearer()
-
-def get_current_user_id(
-    creds: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
-    try:
-        payload = jwt.decode(
-            creds.credentials,
-            JWT_SECRET,
-            algorithms=[JWT_ALGORITHM],
-        )
-        return payload["sub"]
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+__all__ = ["get_current_user_id"]

@@ -1,101 +1,290 @@
-from datetime import datetime, timedelta
+from datetime import datetime, date, time, timezone
+from typing import Dict, List
 
-from fastapi import APIRouter, Depends
-from fastapi import HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import joinedload
 
-from drinks.models import DrinkLog
-from drinks.schemas import DrinkLogPayload
 from core.database import SessionLocal
-from core.deps import get_current_user_id
+from core.security import get_current_user_id
+from drinks.session_models import DrinkSession, DrinkSessionItem
+from drinks.session_schemas import (
+    CreateSessionPayload,
+    BatchCreateSessionsPayload,
+    UpdateSessionPayload,
+)
 
-router = APIRouter(prefix="/drink-logs", tags=["drinks"])
+router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+DEFAULT_HOURS = {
+    "morning": 9,
+    "afternoon": 15,
+    "evening": 20,
+    "night": 23,
+    "late_night": 1,
+}
+
+
+def _parse_date_str(d: str) -> date:
+    try:
+        return datetime.strptime(d, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+
+def _derive_occurred_at(log_date: date, time_window: str) -> datetime:
+    hour = DEFAULT_HOURS.get(time_window, 20)
+    # Use UTC for MVP consistency
+    return datetime.combine(log_date, time(hour=hour, minute=0, second=0, tzinfo=timezone.utc))
+
+
+def _serialize_session(s: DrinkSession) -> dict:
+    return {
+        "id": s.id,
+        "log_date": s.log_date.isoformat(),
+        "occurred_at": s.occurred_at.isoformat(),
+        "time_window": s.time_window,
+        "source": s.source,
+        "notes": s.notes,
+        "items": [
+            {"id": i.id, "drink_type": i.drink_type, "quantity": i.quantity}
+            for i in (s.items or [])
+        ],
+    }
+
+
+def _day_totals(sessions: List[DrinkSession]) -> dict:
+    by_type: Dict[str, int] = {"beer": 0, "wine": 0, "spirits": 0, "other": 0}
+    total_qty = 0
+
+    for s in sessions:
+        for it in (s.items or []):
+            qty = int(it.quantity or 0)
+            total_qty += qty
+            k = (it.drink_type or "other").lower()
+            if k not in by_type:
+                k = "other"
+            by_type[k] += qty
+
+    session_count = len(sessions)
+    has_drinking = session_count > 0 or total_qty > 0
+
+    return {
+        "totalQuantity": total_qty,
+        "byDrinkType": by_type,
+        "sessionCount": session_count,
+        "hasDrinking": has_drinking,
+    }
 
 
 @router.post("")
-def ingest_drink_log(
-    payload: DrinkLogPayload,
-    user_id: str = Depends(get_current_user_id),
-):
+def create_session(payload: CreateSessionPayload, user_id: str = Depends(get_current_user_id)):
     db = SessionLocal()
     try:
-        existing = (
-            db.query(DrinkLog)
-            .filter(DrinkLog.user_id == user_id)
-            .filter(DrinkLog.date == payload.date)
+        with db.begin():
+            if payload.occurred_at is not None:
+                occurred_at = payload.occurred_at
+                # Ensure timezone-aware; if naive, assume UTC
+                if occurred_at.tzinfo is None:
+                    occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+                log_date = occurred_at.date()
+            else:
+                log_date = _parse_date_str(payload.log_date)  # type: ignore[arg-type]
+                occurred_at = _derive_occurred_at(log_date, payload.time_window)
+
+            s = DrinkSession(
+                user_id=user_id,
+                occurred_at=occurred_at,
+                log_date=log_date,
+                time_window=payload.time_window,
+                source=payload.source or "manual",
+                notes=payload.notes,
+            )
+            db.add(s)
+            db.flush()
+
+            for it in payload.items:
+                db.add(
+                    DrinkSessionItem(
+                        session_id=s.id,
+                        drink_type=it.drink_type,
+                        quantity=it.quantity,
+                        auth_status="unknown",
+                    )
+                )
+
+        # reload with items
+        s2 = (
+            db.query(DrinkSession)
+            .options(joinedload(DrinkSession.items))
+            .filter(DrinkSession.id == s.id)
             .first()
         )
-
-        if existing:
-            for k, v in payload.dict().items():
-                setattr(existing, k, v)
-            db.commit()
-            return {"log_id": existing.id}
-
-        log = DrinkLog(user_id=user_id, **payload.dict())
-        db.add(log)
-        db.commit()
-        db.refresh(log)
-
-        return {"log_id": log.id}
+        return {"session": _serialize_session(s2)}  # type: ignore[arg-type]
     finally:
         db.close()
 
 
-@router.get("/month")
-def get_month_logs(
-    month: str,
-    user_id: str = Depends(get_current_user_id),
-):
+@router.post("/batch")
+def create_sessions_batch(payload: BatchCreateSessionsPayload, user_id: str = Depends(get_current_user_id)):
     db = SessionLocal()
+    created_ids: List[str] = []
     try:
-        start = datetime.strptime(month + "-01", "%Y-%m-%d")
-        end = (start + timedelta(days=32)).replace(day=1)
+        with db.begin():
+            for p in payload.sessions:
+                if p.occurred_at is not None:
+                    occurred_at = p.occurred_at
+                    if occurred_at.tzinfo is None:
+                        occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+                    log_date = occurred_at.date()
+                else:
+                    log_date = _parse_date_str(p.log_date)  # type: ignore[arg-type]
+                    occurred_at = _derive_occurred_at(log_date, p.time_window)
 
-        logs = (
-            db.query(DrinkLog)
-            .filter(DrinkLog.user_id == user_id)
-            .filter(DrinkLog.date >= start.strftime("%Y-%m-%d"))
-            .filter(DrinkLog.date < end.strftime("%Y-%m-%d"))
+                s = DrinkSession(
+                    user_id=user_id,
+                    occurred_at=occurred_at,
+                    log_date=log_date,
+                    time_window=p.time_window,
+                    source=p.source or "manual",
+                    notes=p.notes,
+                )
+                db.add(s)
+                db.flush()
+
+                for it in p.items:
+                    db.add(
+                        DrinkSessionItem(
+                            session_id=s.id,
+                            drink_type=it.drink_type,
+                            quantity=it.quantity,
+                            auth_status="unknown",
+                        )
+                    )
+
+                created_ids.append(s.id)
+
+        sessions = (
+            db.query(DrinkSession)
+            .options(joinedload(DrinkSession.items))
+            .filter(DrinkSession.user_id == user_id)
+            .filter(DrinkSession.id.in_(created_ids))
+            .order_by(DrinkSession.log_date.asc(), DrinkSession.occurred_at.asc())
             .all()
         )
 
-        result = {}
-        for log in logs:
-            result[log.date] = {
-                "drank": log.drank,
-                "drink_count": log.drink_count,
-            }
-
-        return result
+        affected_days = sorted({s.log_date.isoformat() for s in sessions})
+        return {
+            "created": [_serialize_session(s) for s in sessions],
+            "affectedDays": affected_days,
+        }
     finally:
         db.close()
 
+
+@router.put("/{session_id}")
+def update_session(session_id: str, payload: UpdateSessionPayload, user_id: str = Depends(get_current_user_id)):
+    db = SessionLocal()
+    try:
+        with db.begin():
+            s = (
+                db.query(DrinkSession)
+                .options(joinedload(DrinkSession.items))
+                .filter(DrinkSession.id == session_id)
+                .filter(DrinkSession.user_id == user_id)
+                .first()
+            )
+            if not s:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if payload.occurred_at is not None:
+                occurred_at = payload.occurred_at
+                if occurred_at.tzinfo is None:
+                    occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+                s.occurred_at = occurred_at
+                s.log_date = occurred_at.date()
+
+            if payload.time_window is not None:
+                s.time_window = payload.time_window
+
+            if payload.source is not None:
+                s.source = payload.source
+
+            if payload.notes is not None:
+                s.notes = payload.notes
+
+            # Replace items if provided
+            if payload.items is not None:
+                # delete existing items
+                db.query(DrinkSessionItem).filter(DrinkSessionItem.session_id == s.id).delete(
+                    synchronize_session=False
+                )
+                # insert new
+                for it in payload.items:
+                    db.add(
+                        DrinkSessionItem(
+                            session_id=s.id,
+                            drink_type=it.drink_type,
+                            quantity=it.quantity,
+                            auth_status="unknown",
+                        )
+                    )
+
+        s2 = (
+            db.query(DrinkSession)
+            .options(joinedload(DrinkSession.items))
+            .filter(DrinkSession.id == session_id)
+            .filter(DrinkSession.user_id == user_id)
+            .first()
+        )
+        return {"session": _serialize_session(s2)}  # type: ignore[arg-type]
+    finally:
+        db.close()
+
+
+@router.delete("/{session_id}")
+def delete_session(session_id: str, user_id: str = Depends(get_current_user_id)):
+    db = SessionLocal()
+    try:
+        with db.begin():
+            s = (
+                db.query(DrinkSession)
+                .filter(DrinkSession.id == session_id)
+                .filter(DrinkSession.user_id == user_id)
+                .first()
+            )
+            if not s:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            db.delete(s)
+
+        return {"ok": True}
+    finally:
+        db.close()
+
+
 @router.get("/day")
-def get_day_log(
-    date: str,
+def get_sessions_for_day(
+    date_str: str = Query(..., alias="date"),
     user_id: str = Depends(get_current_user_id),
 ):
     db = SessionLocal()
     try:
-        log = (
-            db.query(DrinkLog)
-            .filter(DrinkLog.user_id == user_id)
-            .filter(DrinkLog.date == date)
-            .first()
+        d = _parse_date_str(date_str)
+
+        sessions = (
+            db.query(DrinkSession)
+            .options(joinedload(DrinkSession.items))
+            .filter(DrinkSession.user_id == user_id)
+            .filter(DrinkSession.log_date == d)
+            .order_by(DrinkSession.occurred_at.asc())
+            .all()
         )
 
-        if not log:
-            # Frontend will treat this as "no log exists"
-            raise HTTPException(status_code=404, detail="No log for that date")
-
         return {
-            "date": log.date,
-            "drank": log.drank,
-            "drink_count": log.drink_count,
-            "drinks": log.drinks,
-            "time_windows": log.time_windows,
-            "notes": log.notes,
-            # IMPORTANT: do NOT return user_id if you want non-PII responses
+            "date": d.isoformat(),
+            "sessions": [_serialize_session(s) for s in sessions],
+            "dayTotals": _day_totals(sessions),
         }
     finally:
         db.close()

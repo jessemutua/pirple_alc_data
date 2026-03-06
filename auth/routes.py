@@ -6,8 +6,6 @@ from core.database import SessionLocal
 from core.security import hash_password, verify_password, create_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-print("✅ AUTH ROUTES LOADED")
-
 
 def serialize_user(user: User):
     return {

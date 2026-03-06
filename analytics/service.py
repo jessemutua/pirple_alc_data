@@ -1,16 +1,15 @@
-# analytics/service.py
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date as date_type, datetime, timedelta
+from datetime import date as date_type, timedelta
 from statistics import mean
-from typing import Dict, Iterable, List, Any
+from typing import Any, Dict, List
 
 
 def _date_range(from_date: date_type, to_date: date_type) -> List[date_type]:
     if to_date < from_date:
         return []
+
     out: List[date_type] = []
     cur = from_date
     while cur <= to_date:
@@ -44,7 +43,7 @@ def build_user_analytics(
 
     days_list = _date_range(from_date, to_date)
 
-    # Initialize per-day aggregates (include zero-days too)
+    # Per-day aggregates (including zero-days)
     session_count_by_day: Dict[date_type, int] = {d: 0 for d in days_list}
     qty_by_day: Dict[date_type, int] = {d: 0 for d in days_list}
 
@@ -56,29 +55,27 @@ def build_user_analytics(
     weekend = {"drinkingDays": 0, "sessionCount": 0, "totalQuantity": 0}
     weekday = {"drinkingDays": 0, "sessionCount": 0, "totalQuantity": 0}
 
-    # Aggregate from sessions/items
     for s in sessions:
         d = s.log_date
         if d not in session_count_by_day:
-            # Safety in case caller passed sessions slightly outside range
             continue
 
         session_count_by_day[d] += 1
 
-        # time window pattern counts sessions (not days)
         if getattr(s, "time_window", None):
             tw = str(s.time_window).strip().lower().replace(" ", "_")
             time_pattern[tw] += 1
 
-        # item quantities
         for it in (getattr(s, "items", None) or []):
             qty = getattr(it, "quantity", None)
             if qty is None:
                 continue
+
             try:
                 qty_int = int(qty)
             except Exception:
                 continue
+
             if qty_int < 0:
                 continue
 
@@ -87,7 +84,6 @@ def build_user_analytics(
             dt = str(getattr(it, "drink_type", "other")).strip().lower()
             drink_types[dt] += qty_int
 
-    # Build daily + rolling
     daily = []
     rolling = []
     window = []
@@ -95,7 +91,6 @@ def build_user_analytics(
     drinking_days = 0
     total_sessions = 0
     total_quantity = 0
-
     max_daily_quantity = 0
     max_daily_sessions = 0
 
@@ -109,11 +104,8 @@ def build_user_analytics(
 
         total_sessions += day_sessions
         total_quantity += day_qty
-
-        if day_qty > max_daily_quantity:
-            max_daily_quantity = day_qty
-        if day_sessions > max_daily_sessions:
-            max_daily_sessions = day_sessions
+        max_daily_quantity = max(max_daily_quantity, day_qty)
+        max_daily_sessions = max(max_daily_sessions, day_sessions)
 
         daily.append(
             {
@@ -142,7 +134,6 @@ def build_user_analytics(
     avg_qty_per_drinking_day = (total_quantity / drinking_days) if drinking_days else 0
     avg_sessions_per_drinking_day = (total_sessions / drinking_days) if drinking_days else 0
 
-    # Weekend vs weekday derived from per-day aggregates
     for d in days_list:
         bucket = weekend if _is_weekend(d) else weekday
         bucket["sessionCount"] += session_count_by_day[d]
@@ -150,7 +141,6 @@ def build_user_analytics(
         if (session_count_by_day[d] > 0) or (qty_by_day[d] > 0):
             bucket["drinkingDays"] += 1
 
-    # Ensure all expected keys exist in timePattern/drinkTypes
     for k in ["morning", "afternoon", "evening", "night", "late_night"]:
         time_pattern.setdefault(k, 0)
 

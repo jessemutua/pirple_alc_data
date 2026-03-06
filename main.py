@@ -6,7 +6,7 @@ import auth.routes as auth_routes
 import analytics.routes as analytics_routes
 
 # NEW routers (sessions-only)
-import drinks.sessions_routes as sessions_routes
+import drinks.session_routes as sessions_routes
 import drinks.calendar_routes as calendar_routes
 
 from core.config import DATABASE_URL

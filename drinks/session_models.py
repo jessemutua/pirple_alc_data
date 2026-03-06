@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import (
     Column,
@@ -21,7 +20,6 @@ def uuid_str() -> str:
     return str(uuid.uuid4())
 
 
-# Allowed values (MVP uses CHECK constraints, not Postgres ENUMs)
 TIME_WINDOWS = ("morning", "afternoon", "evening", "night", "late_night")
 SOURCES = ("manual", "scan")
 DRINK_TYPES = ("beer", "wine", "spirits", "other")
@@ -39,11 +37,15 @@ class DrinkSession(Base):
 
     time_window = Column(String, nullable=False)
     source = Column(String, nullable=False, default="manual")
-
     notes = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
     items = relationship(
         "DrinkSessionItem",

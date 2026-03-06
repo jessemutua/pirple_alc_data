@@ -1,51 +1,104 @@
-import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import uuid
+from datetime import datetime
 
-import auth.routes as auth_routes
-import analytics.routes as analytics_routes
-
-# NEW routers (sessions-only)
-import drinks.sessions_routes as sessions_routes
-import drinks.calendar_routes as calendar_routes
-
-from core.config import DATABASE_URL
-from core.database import init_db
-
-print("✅ MAIN LOADED")
-
-app = FastAPI(
-    title="Pirple Backend MVP",
-    description="Privacy-first alcohol awareness API",
-    version="1.0.0",
+from sqlalchemy import (
+    Column,
+    String,
+    DateTime,
+    Date,
+    Integer,
+    ForeignKey,
+    CheckConstraint,
+    Index,
 )
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Routers
-app.include_router(auth_routes.router)
-app.include_router(sessions_routes.router)
-app.include_router(calendar_routes.router)
-app.include_router(analytics_routes.router)
+from core.database import Base
 
 
-@app.on_event("startup")
-def startup():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set")
-    print(f"Connecting to database at {DATABASE_URL}")
-
-    # IMPORTANT: uses init_db() which imports models first, then create_all
-    init_db()
+def uuid_str() -> str:
+    return str(uuid.uuid4())
 
 
-@app.get("/__debug/routes")
-def list_routes():
-    return [r.path for r in app.router.routes]
+# Allowed values (MVP uses CHECK constraints, not Postgres ENUMs)
+TIME_WINDOWS = ("morning", "afternoon", "evening", "night", "late_night")
+SOURCES = ("manual", "scan")
+DRINK_TYPES = ("beer", "wine", "spirits", "other")
+AUTH_STATUSES = ("unknown", "verified", "suspicious")
+
+
+class DrinkSession(Base):
+    __tablename__ = "drink_sessions"
+
+    id = Column(String, primary_key=True, default=uuid_str)
+    user_id = Column(String, nullable=False)
+
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+    log_date = Column(Date, nullable=False)
+
+    time_window = Column(String, nullable=False)
+    source = Column(String, nullable=False, default="manual")
+
+    notes = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    items = relationship(
+        "DrinkSessionItem",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            f"time_window IN {TIME_WINDOWS}",
+            name="ck_drink_sessions_time_window",
+        ),
+        CheckConstraint(
+            f"source IN {SOURCES}",
+            name="ck_drink_sessions_source",
+        ),
+        Index("ix_drink_sessions_user_log_date", "user_id", "log_date"),
+        Index("ix_drink_sessions_user_occurred_at", "user_id", "occurred_at"),
+    )
+
+
+class DrinkSessionItem(Base):
+    __tablename__ = "drink_session_items"
+
+    id = Column(String, primary_key=True, default=uuid_str)
+
+    session_id = Column(
+        String,
+        ForeignKey("drink_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    drink_type = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+
+    product_ref = Column(String, nullable=True)
+    auth_status = Column(String, nullable=False, default="unknown")
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    session = relationship("DrinkSession", back_populates="items")
+
+    __table_args__ = (
+        CheckConstraint(
+            f"drink_type IN {DRINK_TYPES}",
+            name="ck_drink_session_items_drink_type",
+        ),
+        CheckConstraint(
+            f"auth_status IN {AUTH_STATUSES}",
+            name="ck_drink_session_items_auth_status",
+        ),
+        CheckConstraint(
+            "quantity >= 0",
+            name="ck_drink_session_items_quantity_nonneg",
+        ),
+        Index("ix_drink_session_items_session_id", "session_id"),
+    )

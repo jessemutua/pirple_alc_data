@@ -80,4 +80,86 @@ def build_user_analytics(
     max_daily_sessions = 0
 
     for d in days_list:
-        day_sessions = session_count_by_day
+        day_sessions = session_count_by_day[d]
+        day_qty = qty_by_day[d]
+        has_drinking = (day_sessions > 0) or (day_qty > 0)
+
+        if has_drinking:
+            drinking_days += 1
+        elif d in sober_dates:
+            sober_days += 1
+
+        total_sessions += day_sessions
+        total_quantity += day_qty
+        max_daily_quantity = max(max_daily_quantity, day_qty)
+        max_daily_sessions = max(max_daily_sessions, day_sessions)
+
+        daily.append(
+            {
+                "date": d.isoformat(),
+                "hasDrinking": has_drinking,
+                "totalQuantity": day_qty,
+                "sessionCount": day_sessions,
+            }
+        )
+
+        window.append(day_qty)
+        if len(window) > 7:
+            window.pop(0)
+
+        rolling.append(
+            {
+                "date": d.isoformat(),
+                "value": round(mean(window), 2) if window else 0,
+            }
+        )
+
+    days_tracked = len(days_list)
+
+    avg_qty_per_day = (total_quantity / days_tracked) if days_tracked else 0
+    avg_qty_per_drinking_day = (total_quantity / drinking_days) if drinking_days else 0
+    avg_sessions_per_drinking_day = (total_sessions / drinking_days) if drinking_days else 0
+
+    for d in days_list:
+        bucket = weekend if _is_weekend(d) else weekday
+        bucket["sessionCount"] += session_count_by_day[d]
+        bucket["totalQuantity"] += qty_by_day[d]
+        if (session_count_by_day[d] > 0) or (qty_by_day[d] > 0):
+            bucket["drinkingDays"] += 1
+
+    for k in ["morning", "afternoon", "evening", "night", "late_night"]:
+        time_pattern.setdefault(k, 0)
+
+    for k in ["beer", "wine", "spirits", "other"]:
+        drink_types.setdefault(k, 0)
+
+    return {
+        "meta": {
+            "requestedDays": requested_days,
+            "availableDays": days_tracked,
+            "from": from_date.isoformat() if days_tracked else None,
+            "to": to_date.isoformat() if days_tracked else None,
+        },
+        "summary": {
+            "daysTracked": days_tracked,
+            "drinkingDays": drinking_days,
+            "soberDays": sober_days,
+            "sessionCount": total_sessions,
+            "totalQuantity": total_quantity,
+            "avgQuantityPerDay": round(avg_qty_per_day, 2) if days_tracked else 0,
+            "avgQuantityPerDrinkingDay": round(avg_qty_per_drinking_day, 2) if drinking_days else 0,
+            "avgSessionsPerDrinkingDay": round(avg_sessions_per_drinking_day, 2) if drinking_days else 0,
+            "maxDailyQuantity": max_daily_quantity,
+            "maxDailySessions": max_daily_sessions,
+        },
+        "trend": {
+            "daily": daily,
+            "rollingAvg7dQuantity": rolling,
+        },
+        "timePattern": dict(time_pattern),
+        "drinkTypes": dict(drink_types),
+        "weekendVsWeekday": {
+            "weekend": weekend,
+            "weekday": weekday,
+        },
+    }

@@ -1,6 +1,5 @@
 # core/security.py
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
@@ -29,8 +28,7 @@ def verify_password(password: str, hashed: str) -> bool:
 def create_token(user_id: str) -> str:
     payload = {
         "sub": str(user_id),
-        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),
-    }
+"exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),    }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 

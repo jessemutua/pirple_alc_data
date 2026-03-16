@@ -1,11 +1,13 @@
 from datetime import date as date_type, timedelta
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import joinedload
 
 from analytics.service import build_user_analytics
 from core.database import SessionLocal
 from core.security import get_current_user_id
 from drinks.session_models import DrinkSession
+from drinks.sober_models import SoberDay
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -25,6 +27,7 @@ def get_analytics(
 
         sessions = (
             db.query(DrinkSession)
+            .options(joinedload(DrinkSession.items))
             .filter(DrinkSession.user_id == user_id)
             .filter(DrinkSession.log_date >= from_date)
             .filter(DrinkSession.log_date <= to_date)
@@ -32,12 +35,18 @@ def get_analytics(
             .all()
         )
 
-        # Force-load items while session is attached to db session
-        for s in sessions:
-            _ = list(s.items)
+        sober_rows = (
+            db.query(SoberDay)
+            .filter(SoberDay.user_id == user_id)
+            .filter(SoberDay.log_date >= from_date)
+            .filter(SoberDay.log_date <= to_date)
+            .all()
+        )
+        sober_dates = {row.log_date for row in sober_rows}
 
         return build_user_analytics(
             sessions=sessions,
+            sober_dates=sober_dates,
             from_date=from_date,
             to_date=to_date,
             requested_days=days,

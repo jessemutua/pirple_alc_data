@@ -7,7 +7,7 @@ load_dotenv()
 # JWT Configurations
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = 24
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "168"))  
 
 # Database URL
 DATABASE_URL = os.getenv("DATABASE_URL")

@@ -19,15 +19,17 @@ def serialize_user(user: User):
 def register(payload: AuthPayload):
     db = SessionLocal()
     try:
-        if db.query(User).filter(User.email == payload.email).first():
-            raise HTTPException(400, "Email already exists")
+        with db.begin():
+            if db.query(User).filter(User.email == payload.email).first():
+                raise HTTPException(400, "Email already exists")
 
-        user = User(
-            email=payload.email,
-            password_hash=hash_password(payload.password),
-        )
-        db.add(user)
-        db.commit()
+            user = User(
+                email=payload.email,
+                password_hash=hash_password(payload.password),
+            )
+            db.add(user)
+            db.flush()
+
         db.refresh(user)
 
         return {

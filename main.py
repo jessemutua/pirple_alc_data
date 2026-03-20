@@ -11,6 +11,8 @@ import drinks.sober_routes as sober_routes
 
 from core.config import DATABASE_URL
 from core.database import init_db
+import analytics.refresh_routes as refresh_routes
+app.include_router(refresh_routes.router)
 
 print("✅ MAIN LOADED")
 

@@ -12,6 +12,7 @@ SourceType = Literal["manual", "scan"]
 class SessionItemPayload(BaseModel):
     drink_type: DrinkType
     quantity: int = Field(ge=0)
+    scan_event_id: Optional[str] = None
 
 
 class CreateSessionPayload(BaseModel):

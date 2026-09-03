@@ -22,6 +22,6 @@ def init_db():
     """
     import auth.models  # noqa: F401
     import drinks.session_models  # noqa: F401
-    # Do NOT import legacy drinks.models (DrinkLog)
-
+    import drinks.sober_models  # noqa: F401
+    import drinks.scan_models  # noqa: F401
     Base.metadata.create_all(bind=engine)

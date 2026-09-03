@@ -12,7 +12,7 @@ from drinks.session_schemas import (
     BatchCreateSessionsPayload,
     UpdateSessionPayload,
 )
-
+from drinks.scan_models import ScanEvent
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
@@ -37,6 +37,22 @@ def _derive_occurred_at(log_date: date, time_window: str) -> datetime:
     # Use UTC for MVP consistency
     return datetime.combine(log_date, time(hour=hour, minute=0, second=0, tzinfo=timezone.utc))
 
+def _resolve_item_auth(db, scan_event_id: str | None) -> tuple[str | None, str]:
+    """
+    Given an item's scan_event_id (if any), looks up the real ScanEvent
+    and returns (product_ref, auth_status) to store on the item —
+    never trusting a client-supplied auth_status directly.
+    """
+    if not scan_event_id:
+        return None, "unknown"
+
+    event = db.query(ScanEvent).filter(ScanEvent.id == scan_event_id).first()
+    if not event:
+        # client sent a scan_event_id that doesn't exist — don't trust it
+        return None, "unknown"
+
+    return event.gtin or event.barcode_raw, event.combined_auth_status
+
 
 def _serialize_session(s: DrinkSession) -> dict:
     return {
@@ -47,7 +63,14 @@ def _serialize_session(s: DrinkSession) -> dict:
         "source": s.source,
         "notes": s.notes,
         "items": [
-            {"id": i.id, "drink_type": i.drink_type, "quantity": i.quantity}
+            {
+                "id": i.id,
+                "drink_type": i.drink_type,
+                "quantity": i.quantity,
+                "product_ref": i.product_ref,
+                "auth_status": i.auth_status,
+                "scan_event_id": i.scan_event_id,
+            }
             for i in (s.items or [])
         ],
     }
@@ -104,12 +127,15 @@ def create_session(payload: CreateSessionPayload, user_id: str = Depends(get_cur
             db.flush()
 
             for it in payload.items:
+                product_ref, auth_status = _resolve_item_auth(db, it.scan_event_id)
                 db.add(
                     DrinkSessionItem(
                         session_id=s.id,
                         drink_type=it.drink_type,
                         quantity=it.quantity,
-                        auth_status="unknown",
+                        product_ref=product_ref,
+                        auth_status=auth_status,
+                        scan_event_id=it.scan_event_id,
                     )
                 )
 
@@ -153,12 +179,15 @@ def create_sessions_batch(payload: BatchCreateSessionsPayload, user_id: str = De
                 db.flush()
 
                 for it in p.items:
+                    product_ref, auth_status = _resolve_item_auth(db, it.scan_event_id)
                     db.add(
                         DrinkSessionItem(
                             session_id=s.id,
                             drink_type=it.drink_type,
                             quantity=it.quantity,
-                            auth_status="unknown",
+                            product_ref=product_ref,
+                            auth_status=auth_status,
+                            scan_event_id=it.scan_event_id,
                         )
                     )
 
@@ -221,12 +250,15 @@ def update_session(session_id: str, payload: UpdateSessionPayload, user_id: str 
                 )
                 # insert new
                 for it in payload.items:
+                    product_ref, auth_status = _resolve_item_auth(db, it.scan_event_id)
                     db.add(
                         DrinkSessionItem(
                             session_id=s.id,
                             drink_type=it.drink_type,
                             quantity=it.quantity,
-                            auth_status="unknown",
+                            product_ref=product_ref,
+                            auth_status=auth_status,
+                            scan_event_id=it.scan_event_id,
                         )
                     )
 

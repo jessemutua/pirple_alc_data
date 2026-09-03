@@ -8,6 +8,7 @@ import analytics.routes as analytics_routes
 import drinks.session_routes as sessions_routes
 import drinks.calendar_routes as calendar_routes
 import drinks.sober_routes as sober_routes
+import drinks.scan_routes as scan_routes
 
 from core.config import DATABASE_URL
 from core.database import init_db
@@ -16,7 +17,7 @@ import analytics.refresh_routes as refresh_routes
 print("✅ MAIN LOADED")
 
 app = FastAPI(
-    title="Kimi Backend",
+    title="Limi Backend",
     description="Privacy-first alcohol awareness API",
     version="1.0.0",
 )
@@ -35,12 +36,12 @@ app.include_router(calendar_routes.router)
 app.include_router(analytics_routes.router)
 app.include_router(sober_routes.router)
 app.include_router(refresh_routes.router)  # moved here
+app.include_router(scan_routes.router)
 
 @app.on_event("startup")
 def startup():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
-    print(f"Connecting to database at {DATABASE_URL}")
     init_db()
 
 

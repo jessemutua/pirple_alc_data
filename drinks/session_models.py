@@ -84,7 +84,8 @@ class DrinkSessionItem(Base):
 
     product_ref = Column(String, nullable=True)
     auth_status = Column(String, nullable=False, default="unknown")
-
+    scan_event_id = Column(String, ForeignKey("scan_events.id"), nullable=True)
+        
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     session = relationship("DrinkSession", back_populates="items")

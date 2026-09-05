@@ -72,4 +72,5 @@ def lookup_product(
         "auth_status": auth_status,
         "auth_reason": auth_reason,
         "product": product_info,
+        "scanned_at": event.created_at.isoformat() if event.created_at else None,
     }

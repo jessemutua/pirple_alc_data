@@ -14,7 +14,6 @@ from core.config import DATABASE_URL
 from core.database import init_db
 import analytics.refresh_routes as refresh_routes
 
-print("✅ MAIN LOADED")
 
 app = FastAPI(
     title="Limi Backend",
@@ -22,9 +21,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,6 +50,6 @@ def startup():
     init_db()
 
 
-@app.get("/__debug/routes")
-def list_routes():
-    return [r.path for r in app.router.routes]
+# @app.get("/__debug/routes")
+# def list_routes():
+#     return [r.path for r in app.router.routes]

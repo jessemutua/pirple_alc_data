@@ -5,7 +5,9 @@ import os
 load_dotenv()
 
 # JWT Configurations
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET is not set")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "168"))  
 

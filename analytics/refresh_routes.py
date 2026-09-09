@@ -4,7 +4,9 @@ from core.database import SessionLocal
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-METRICS_TOKEN = os.getenv("METRICS_TOKEN", "")
+METRICS_TOKEN = os.getenv("METRICS_TOKEN")
+if not METRICS_TOKEN:
+    raise RuntimeError("METRICS_TOKEN is not set")
 
 @router.post("/refresh-metrics")
 def refresh_metrics(authorization: str = Header(...)):

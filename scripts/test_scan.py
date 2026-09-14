@@ -24,9 +24,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import exists, select  # noqa: E402
 
 from core.database import SessionLocal  # noqa: E402
+from drinks.scan_models import ScanEvent  # noqa: E402
 from products.models import Product, ProductSerial  # noqa: E402
 
 API_BASE = os.getenv("API_BASE", "http://localhost:8000").rstrip("/")
@@ -66,20 +67,35 @@ def new_account() -> str:
 
 
 def genuine_pair() -> tuple[str, str]:
-    """A real GTIN and issued serial straight out of the ledger."""
+    """
+    A real GTIN and issued serial with NO scan history.
+
+    Seeded scan data backdates months of activity, so any serial that has
+    already been scanned will legitimately trip the reuse rules. The genuine
+    case needs a bottle nobody has ever scanned.
+    """
     db = SessionLocal()
     try:
         row = db.execute(
             select(ProductSerial.gtin14, ProductSerial.serial)
             .join(Product, Product.gtin14 == ProductSerial.gtin14)
-            .where(ProductSerial.status == "issued")
+            .where(
+                ProductSerial.status == "issued",
+                ~exists().where(
+                    ScanEvent.serial == ProductSerial.serial,
+                    ScanEvent.gtin == ProductSerial.gtin14,
+                ),
+            )
             .limit(1)
         ).first()
     finally:
         db.close()
 
     if row is None:
-        print("no serials in the ledger — run scripts/seed_products.py first")
+        print(
+            "no unscanned serials left — reseed with:\n"
+            "  python scripts/seed_products.py --serials 400"
+        )
         raise SystemExit(1)
     return row[0], row[1]
 

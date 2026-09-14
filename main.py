@@ -10,6 +10,8 @@ import drinks.calendar_routes as calendar_routes
 import drinks.sober_routes as sober_routes
 import drinks.scan_routes as scan_routes
 
+import reporting.routes as manufacturer_routes
+
 from core.config import DATABASE_URL
 from core.database import init_db
 import analytics.refresh_routes as refresh_routes
@@ -40,16 +42,13 @@ app.include_router(sessions_routes.router)
 app.include_router(calendar_routes.router)
 app.include_router(analytics_routes.router)
 app.include_router(sober_routes.router)
-app.include_router(refresh_routes.router)  # moved here
+app.include_router(refresh_routes.router)
 app.include_router(scan_routes.router)
+app.include_router(manufacturer_routes.router)
+
 
 @app.on_event("startup")
 def startup():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
     init_db()
-
-
-# @app.get("/__debug/routes")
-# def list_routes():
-#     return [r.path for r in app.router.routes]

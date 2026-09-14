@@ -17,6 +17,7 @@ import argparse
 import json
 import secrets
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +28,7 @@ from sqlalchemy import func, select  # noqa: E402
 from core.database import SessionLocal  # noqa: E402
 from products.models import (  # noqa: E402
     CATEGORIES,
+    DEFAULT_CURRENCY,
     Manufacturer,
     Product,
     ProductSerial,
@@ -51,6 +53,19 @@ def check_digit(body: str) -> str:
     return str((10 - total % 10) % 10)
 
 
+def to_money(value, label: str):
+    """Money via Decimal — binary floats can't hold a price exactly."""
+    if value is None or value == "":
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{label}: not a number ({value!r})")
+    if amount < 0:
+        raise ValueError(f"{label}: negative price ({value!r})")
+    return amount
+
+
 def validate_catalogue(data: dict) -> None:
     """Fail loudly on a malformed catalogue rather than seeding junk."""
     slugs = {m["slug"] for m in data["manufacturers"]}
@@ -69,6 +84,11 @@ def validate_catalogue(data: dict) -> None:
             raise ValueError(f"{gtin}: unknown manufacturer {p['manufacturer']!r}")
         if p["category"] not in CATEGORIES:
             raise ValueError(f"{gtin}: unknown category {p['category']!r}")
+
+        # Prices are optional — real uploads are always partial — but a
+        # present price must be a sane number.
+        to_money(p.get("unit_price"), f"{gtin} unit_price")
+        to_money(p.get("retail_price"), f"{gtin} retail_price")
 
         seen_gtins.add(gtin)
 
@@ -107,9 +127,23 @@ def sync_manufacturers(db, rows: list[dict]) -> dict[str, str]:
     return ids
 
 
-def sync_products(db, rows: list[dict], manufacturer_ids: dict[str, str]) -> int:
-    """Upsert by gtin14. Returns count written."""
+def sync_products(
+    db,
+    rows: list[dict],
+    manufacturer_ids: dict[str, str],
+    default_currency: str,
+) -> tuple[int, int]:
+    """Upsert by gtin14. Returns (written, priced)."""
+    priced = 0
+
     for row in rows:
+        unit_price = to_money(row.get("unit_price"), row["gtin14"])
+        retail_price = to_money(row.get("retail_price"), row["gtin14"])
+        currency = row.get("currency", default_currency)
+
+        if unit_price is not None:
+            priced += 1
+
         existing = db.get(Product, row["gtin14"])
         if existing is None:
             db.add(
@@ -120,6 +154,9 @@ def sync_products(db, rows: list[dict], manufacturer_ids: dict[str, str]) -> int
                     product_name=row["product_name"],
                     category=row["category"],
                     volume_ml=row.get("volume_ml"),
+                    unit_price=unit_price,
+                    retail_price=retail_price,
+                    currency=currency,
                     source=SEED,
                     is_active=True,
                 )
@@ -130,10 +167,13 @@ def sync_products(db, rows: list[dict], manufacturer_ids: dict[str, str]) -> int
             existing.product_name = row["product_name"]
             existing.category = row["category"]
             existing.volume_ml = row.get("volume_ml")
+            existing.unit_price = unit_price
+            existing.retail_price = retail_price
+            existing.currency = currency
             existing.is_active = True
 
     db.commit()
-    return len(rows)
+    return len(rows), priced
 
 
 def top_up_serials(db, gtins: list[str], target: int) -> int:
@@ -216,6 +256,7 @@ def main() -> int:
         return 2
 
     data = json.loads(args.catalogue.read_text())
+    currency = data.get("currency", DEFAULT_CURRENCY)
 
     try:
         validate_catalogue(data)
@@ -231,8 +272,8 @@ def main() -> int:
         ids = sync_manufacturers(db, data["manufacturers"])
         print(f"mfrs   : {len(ids)}")
 
-        count = sync_products(db, data["products"], ids)
-        print(f"skus   : {count}")
+        count, priced = sync_products(db, data["products"], ids, currency)
+        print(f"skus   : {count} ({priced} priced in {currency})")
 
         gtins = [p["gtin14"] for p in data["products"]]
         minted = top_up_serials(db, gtins, args.serials)

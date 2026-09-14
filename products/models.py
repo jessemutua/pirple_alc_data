@@ -2,7 +2,7 @@
 import uuid
 
 from sqlalchemy import (
-    Column, String, Integer, Boolean, DateTime,
+    Column, String, Integer, Numeric, Boolean, DateTime,
     ForeignKey, ForeignKeyConstraint, Index, PrimaryKeyConstraint,
 )
 from sqlalchemy.sql import func
@@ -26,6 +26,8 @@ VERIFICATION_MODES = ("ledger", "api")
 CATEGORIES = ("beer", "wine", "spirits", "rtd", "other")
 
 SERIAL_STATUSES = ("issued", "recalled")
+
+DEFAULT_CURRENCY = "KES"
 
 
 class Manufacturer(Base):
@@ -65,6 +67,19 @@ class Product(Base):
     product_name = Column(String, nullable=False)
     category = Column(String, nullable=False)
     volume_ml = Column(Integer, nullable=True)
+
+    # What the manufacturer sells the unit for — ex-factory or trade price.
+    # This is the basis for counterfeit exposure: it's the revenue actually
+    # diverted per bottle, and the figure a manufacturer already records.
+    unit_price = Column(Numeric(12, 2), nullable=True)
+
+    # Shelf price. A different number, owned by a different party — kept
+    # separate so exposure is never silently inflated by retail margin.
+    retail_price = Column(Numeric(12, 2), nullable=True)
+
+    # Explicit, not assumed. Mixing currencies without saying so is worse
+    # than reporting no value at all.
+    currency = Column(String(3), nullable=False, default=DEFAULT_CURRENCY)
 
     source = Column(String, nullable=False, default="seed")
 

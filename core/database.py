@@ -25,4 +25,5 @@ def init_db():
     import drinks.sober_models  # noqa: F401
     import drinks.scan_models  # noqa: F401
     import products.models  # noqa: F401
+    import reporting.models  # noqa: F401
     Base.metadata.create_all(bind=engine)

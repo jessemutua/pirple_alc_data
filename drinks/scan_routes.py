@@ -1,16 +1,30 @@
 # drinks/scan_routes.py
-from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
+from core.security import get_current_user_id
 from drinks.scan_models import ScanEvent, uuid_str
 from drinks.scan_reuse import check_reuse
-from products.adapters import lookup_registry
-from core.security import get_current_user_id
+from products.adapters import (
+    REGISTRY_REGISTERED,
+    REGISTRY_UNREACHABLE,
+    SERIAL_NOT_ISSUED,
+    SERIAL_UNKNOWN,
+    lookup_product,
+    to_gtin14,
+    verify_serial,
+)
+from products.models import Manufacturer
 
 router = APIRouter(prefix="/products", tags=["scan"])
+
+STATUS_VERIFIED = "verified"
+STATUS_SUSPICIOUS = "suspicious"
+STATUS_UNKNOWN = "unknown"
 
 
 def get_db():
@@ -21,39 +35,84 @@ def get_db():
         db.close()
 
 
-@router.get("/lookup")
-def lookup_product(
-    barcode: str = Query(...),
-    gtin: str = Query(...),
-    serial: str = Query(...),
-    lat: float = Query(None),
-    lng: float = Query(None),
-    current_user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-):
-    # 1. Registry check — is this GTIN a real, known product?
-    registry_result, product_info, raw_response = lookup_registry(gtin)
+class ScanLookupRequest(BaseModel):
+    barcode: str
+    gtin: str
+    # Optional: bottles carrying only a retail EAN-13 have no serial until
+    # the manufacturer starts printing GS1 DataMatrix.
+    serial: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
-    # 2. Reuse check — has this serial been seen in a way that looks suspicious?
-    auth_status, auth_reason, first_scan_at, prior_scan_at, prior_scan_user_id = check_reuse(
-        db, serial, current_user_id
-    )
 
-    # A registry miss overrides a "verified" reuse result — an unregistered
-    # product can't be called verified no matter what the reuse check says.
-    if registry_result != "registered" and auth_status == "verified":
-        auth_status = "unknown" if registry_result == "unreachable" else "suspicious"
-        auth_reason = auth_reason or f"registry check: {registry_result}"
+def perform_scan(
+    db: Session,
+    current_user_id: str,
+    barcode: str,
+    gtin: str,
+    serial: Optional[str],
+    lat: Optional[float],
+    lng: Optional[float],
+) -> dict:
+    """
+    Registry -> serial ledger -> reuse. Each check's raw answer is stored
+    alongside the verdict so the reason behind a flag stays readable later.
+    """
+    # Normalise once. Lookup, ledger and reporting all use the 14-digit form
+    # so the parser and the catalogue can never disagree.
+    gtin14 = to_gtin14(gtin)
 
-    # 3. Store this scan, unconditionally — every scan is recorded.
+    registry_result, product, raw_response = lookup_product(db, gtin)
+
+    serial_result = SERIAL_UNKNOWN
+    auth_reason = None
+    first_scan_at = prior_scan_at = prior_scan_user_id = None
+    manufacturer = None
+
+    if registry_result != REGISTRY_REGISTERED:
+        if registry_result == REGISTRY_UNREACHABLE:
+            # We couldn't check. Say so — never imply a pass.
+            auth_status = STATUS_UNKNOWN
+            auth_reason = "registry unavailable"
+        else:
+            auth_status = STATUS_SUSPICIOUS
+            auth_reason = "barcode not registered to any manufacturer"
+    else:
+        manufacturer = db.get(Manufacturer, product.manufacturer_id)
+
+        serial_result, serial_reason = verify_serial(db, product, serial)
+
+        if serial_result == SERIAL_NOT_ISSUED:
+            auth_status = STATUS_SUSPICIOUS
+            auth_reason = serial_reason
+
+        elif serial_result == SERIAL_UNKNOWN:
+            # Known product, nothing verifiable about this bottle.
+            auth_status = STATUS_UNKNOWN
+            auth_reason = serial_reason
+
+        else:
+            # A genuine serial can still have been cloned onto a fake.
+            (
+                auth_status,
+                auth_reason,
+                first_scan_at,
+                prior_scan_at,
+                prior_scan_user_id,
+            ) = check_reuse(db, gtin14, serial, current_user_id)
+
     event = ScanEvent(
         id=uuid_str(),
         user_id=current_user_id,
         barcode_raw=barcode,
-        gtin=gtin,
+        gtin=gtin14,
         serial=serial,
         registry_result=registry_result,
+        serial_result=serial_result,
         manufacturer_raw_response=raw_response,
+        manufacturer_id=product.manufacturer_id if product else None,
+        brand=product.brand if product else None,
+        category=product.category if product else None,
         first_scan_at=first_scan_at,
         prior_scan_at=prior_scan_at,
         prior_scan_user_id=prior_scan_user_id,
@@ -66,11 +125,62 @@ def lookup_product(
     db.commit()
     db.refresh(event)
 
-    # 4. Return just what the FE needs.
     return {
         "scan_event_id": event.id,
         "auth_status": auth_status,
         "auth_reason": auth_reason,
-        "product": product_info,
+        "product": (
+            {
+                "brand": product.brand,
+                "name": product.product_name,
+                "manufacturer": manufacturer.name if manufacturer else None,
+            }
+            if product
+            else None
+        ),
         "scanned_at": event.created_at.isoformat() if event.created_at else None,
     }
+
+
+@router.post("/lookup")
+def scan_lookup(
+    payload: ScanLookupRequest,
+    current_user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    return perform_scan(
+        db=db,
+        current_user_id=current_user_id,
+        barcode=payload.barcode,
+        gtin=payload.gtin,
+        serial=payload.serial,
+        lat=payload.lat,
+        lng=payload.lng,
+    )
+
+
+@router.get("/lookup", deprecated=True)
+def scan_lookup_legacy(
+    barcode: str = Query(...),
+    gtin: str = Query(...),
+    serial: str = Query(None),
+    lat: float = Query(None),
+    lng: float = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Deprecated. A scan writes a row, so it must not be a GET — clients and
+    proxies retry GETs automatically, which duplicates scan events.
+
+    Kept only for APK builds already in the field. Remove once those are gone.
+    """
+    return perform_scan(
+        db=db,
+        current_user_id=current_user_id,
+        barcode=barcode,
+        gtin=gtin,
+        serial=serial,
+        lat=lat,
+        lng=lng,
+    )

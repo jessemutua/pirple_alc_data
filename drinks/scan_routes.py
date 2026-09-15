@@ -132,6 +132,12 @@ def perform_scan(
     db.commit()
     db.refresh(event)
 
+    # The product details are only established fact when the whole chain
+    # passed. A fabricated serial usually means the barcode was copied too,
+    # so naming the product there would assert something we do not know.
+    # Anything else is what the label CLAIMS to be.
+    product_verified = auth_status == STATUS_VERIFIED
+
     return {
         "scan_event_id": event.id,
         "auth_status": auth_status,
@@ -145,6 +151,7 @@ def perform_scan(
             if product
             else None
         ),
+        "product_verified": product_verified,
         "scanned_at": event.created_at.isoformat() if event.created_at else None,
     }
 

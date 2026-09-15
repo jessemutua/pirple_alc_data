@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Limi test labels</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.note { color: #555; margin: 0 0 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
+  .label { margin: 0; border: 1px solid #ddd; border-radius: 8px; padding: 14px; text-align: center; break-inside: avoid; }
+  .label img { width: 170px; height: 170px; }
+  figcaption { display: grid; gap: 2px; margin-top: 10px; }
+  figcaption strong { text-transform: uppercase; letter-spacing: .04em; font-size: 11px; }
+  figcaption span { font-size: 12px; }
+  figcaption code { font-size: 11px; color: #444; }
+  figcaption em { font-size: 11px; color: #666; }
+  @media print { .label { border-color: #999; } }
+</style>
+</head>
+<body>
+  <h1>Limi test labels</h1>
+  <p class="note">
+    16 labels. Scan with the Limi app and compare against the expected
+    result printed under each code. Print at 100% scale, do not fit to page.
+  </p>
+  <div class="grid">
+      <figure class="label">
+        <img src="genuine-JFU683XH9B-qr.svg" alt="genuine label" />
+        <figcaption>
+          <strong>genuine</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>JFU683XH9B</code>
+          <em>expects: verified</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="genuine-VL2A37W63F-qr.svg" alt="genuine label" />
+        <figcaption>
+          <strong>genuine</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>VL2A37W63F</code>
+          <em>expects: verified</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="genuine-KMM2EMB3WY-qr.svg" alt="genuine label" />
+        <figcaption>
+          <strong>genuine</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>KMM2EMB3WY</code>
+          <em>expects: verified</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="genuine-SCDYY3HZWF-qr.svg" alt="genuine label" />
+        <figcaption>
+          <strong>genuine</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>SCDYY3HZWF</code>
+          <em>expects: verified</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="fabricated-WT6ZZWEDWU-qr.svg" alt="fabricated label" />
+        <figcaption>
+          <strong>fabricated</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>WT6ZZWEDWU</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="fabricated-SW6S9UNC74-qr.svg" alt="fabricated label" />
+        <figcaption>
+          <strong>fabricated</strong>
+          <span>Kenya Cane Original 250ml</span>
+          <code>06160000000029</code>
+          <code>SW6S9UNC74</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="fabricated-5QMHUVTMKK-qr.svg" alt="fabricated label" />
+        <figcaption>
+          <strong>fabricated</strong>
+          <span>Kenya Cane Coconut 750ml</span>
+          <code>06160000000036</code>
+          <code>5QMHUVTMKK</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="fabricated-L9CYLVVXTA-qr.svg" alt="fabricated label" />
+        <figcaption>
+          <strong>fabricated</strong>
+          <span>Kibao Vodka 750ml</span>
+          <code>06160000000043</code>
+          <code>L9CYLVVXTA</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="clone-JFU683XH9B-a-qr.svg" alt="clone label" />
+        <figcaption>
+          <strong>clone</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>JFU683XH9B (copy a)</code>
+          <em>expects: verified, then suspicious on the second scan</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="clone-JFU683XH9B-b-qr.svg" alt="clone label" />
+        <figcaption>
+          <strong>clone</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>JFU683XH9B (copy b)</code>
+          <em>expects: verified, then suspicious on the second scan</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="clone-VL2A37W63F-a-qr.svg" alt="clone label" />
+        <figcaption>
+          <strong>clone</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>VL2A37W63F (copy a)</code>
+          <em>expects: verified, then suspicious on the second scan</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="clone-VL2A37W63F-b-qr.svg" alt="clone label" />
+        <figcaption>
+          <strong>clone</strong>
+          <span>Kenya Cane Original 750ml</span>
+          <code>06160000000012</code>
+          <code>VL2A37W63F (copy b)</code>
+          <em>expects: verified, then suspicious on the second scan</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="unknown-V8M8KQHS9B-qr.svg" alt="unknown label" />
+        <figcaption>
+          <strong>unknown</strong>
+          <span>not in any catalogue</span>
+          <code>09990000000012</code>
+          <code>V8M8KQHS9B</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="unknown-H598ZMN96E-qr.svg" alt="unknown label" />
+        <figcaption>
+          <strong>unknown</strong>
+          <span>not in any catalogue</span>
+          <code>09990000000029</code>
+          <code>H598ZMN96E</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="unknown-ZUSMHDF8MF-qr.svg" alt="unknown label" />
+        <figcaption>
+          <strong>unknown</strong>
+          <span>not in any catalogue</span>
+          <code>09990000000036</code>
+          <code>ZUSMHDF8MF</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+      <figure class="label">
+        <img src="unknown-FSZM5SDTNW-qr.svg" alt="unknown label" />
+        <figcaption>
+          <strong>unknown</strong>
+          <span>not in any catalogue</span>
+          <code>09990000000043</code>
+          <code>FSZM5SDTNW</code>
+          <em>expects: suspicious</em>
+        </figcaption>
+      </figure>
+  </div>
+</body>
+</html>

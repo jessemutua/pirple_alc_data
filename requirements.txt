@@ -20,3 +20,4 @@ python-jose[cryptography]==3.5.0
 email-validator==2.3.0
 passlib[argon2]==1.7.4
 argon2-cffi==25.1.0
+tzdata==2025.2

@@ -1,0 +1,17 @@
+case,product,gtin,serial,expected,datamatrix,qr
+genuine,Kenya Cane Original 750ml,06160000000012,JFU683XH9B,verified,genuine-JFU683XH9B.svg,genuine-JFU683XH9B-qr.svg
+genuine,Kenya Cane Original 750ml,06160000000012,VL2A37W63F,verified,genuine-VL2A37W63F.svg,genuine-VL2A37W63F-qr.svg
+genuine,Kenya Cane Original 750ml,06160000000012,KMM2EMB3WY,verified,genuine-KMM2EMB3WY.svg,genuine-KMM2EMB3WY-qr.svg
+genuine,Kenya Cane Original 750ml,06160000000012,SCDYY3HZWF,verified,genuine-SCDYY3HZWF.svg,genuine-SCDYY3HZWF-qr.svg
+fabricated,Kenya Cane Original 750ml,06160000000012,WT6ZZWEDWU,suspicious,fabricated-WT6ZZWEDWU.svg,fabricated-WT6ZZWEDWU-qr.svg
+fabricated,Kenya Cane Original 250ml,06160000000029,SW6S9UNC74,suspicious,fabricated-SW6S9UNC74.svg,fabricated-SW6S9UNC74-qr.svg
+fabricated,Kenya Cane Coconut 750ml,06160000000036,5QMHUVTMKK,suspicious,fabricated-5QMHUVTMKK.svg,fabricated-5QMHUVTMKK-qr.svg
+fabricated,Kibao Vodka 750ml,06160000000043,L9CYLVVXTA,suspicious,fabricated-L9CYLVVXTA.svg,fabricated-L9CYLVVXTA-qr.svg
+clone,Kenya Cane Original 750ml,06160000000012,JFU683XH9B (copy a),"verified, then suspicious on the second scan",clone-JFU683XH9B-a.svg,clone-JFU683XH9B-a-qr.svg
+clone,Kenya Cane Original 750ml,06160000000012,JFU683XH9B (copy b),"verified, then suspicious on the second scan",clone-JFU683XH9B-b.svg,clone-JFU683XH9B-b-qr.svg
+clone,Kenya Cane Original 750ml,06160000000012,VL2A37W63F (copy a),"verified, then suspicious on the second scan",clone-VL2A37W63F-a.svg,clone-VL2A37W63F-a-qr.svg
+clone,Kenya Cane Original 750ml,06160000000012,VL2A37W63F (copy b),"verified, then suspicious on the second scan",clone-VL2A37W63F-b.svg,clone-VL2A37W63F-b-qr.svg
+unknown,not in any catalogue,09990000000012,V8M8KQHS9B,suspicious,unknown-V8M8KQHS9B.svg,unknown-V8M8KQHS9B-qr.svg
+unknown,not in any catalogue,09990000000029,H598ZMN96E,suspicious,unknown-H598ZMN96E.svg,unknown-H598ZMN96E-qr.svg
+unknown,not in any catalogue,09990000000036,ZUSMHDF8MF,suspicious,unknown-ZUSMHDF8MF.svg,unknown-ZUSMHDF8MF-qr.svg
+unknown,not in any catalogue,09990000000043,FSZM5SDTNW,suspicious,unknown-FSZM5SDTNW.svg,unknown-FSZM5SDTNW-qr.svg

@@ -8,6 +8,7 @@ ask this API for someone else's data.
 """
 import csv
 import io
+from core.geo import boundaries_geojson
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -275,3 +276,33 @@ def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+@router.get("/counties")
+def get_counties(
+    rng: DateRange = Depends(date_range),
+    context: ManufacturerContext = Depends(get_current_manufacturer),
+    db: Session = Depends(get_db),
+):
+    """Per-county totals for the national map."""
+    return {
+        "period": rng.as_dict(),
+        **service.counties(db, context.manufacturer_id, rng),
+    }
+
+
+@router.get("/geo/counties")
+def get_county_boundaries(
+    context: ManufacturerContext = Depends(get_current_manufacturer),
+):
+    """
+    County polygons for the map to draw.
+
+    Served from the backend rather than duplicated into the dashboard, so the
+    names used to tag scans always match the names on the shapes.
+    """
+    boundaries = boundaries_geojson()
+    if boundaries is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="County boundaries are not configured",
+        )
+    return boundaries

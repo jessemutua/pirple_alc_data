@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
+from core.geo import county_for
 from core.security import get_current_user_id
 from drinks.scan_models import ScanEvent, uuid_str
 from drinks.scan_reuse import check_reuse
@@ -71,7 +72,7 @@ def perform_scan(
 
     if registry_result != REGISTRY_REGISTERED:
         if registry_result == REGISTRY_UNREACHABLE:
-            # We couldn't check. Say so — never imply a pass.
+            # We could not check. Say so, never imply a pass.
             auth_status = STATUS_UNKNOWN
             auth_reason = "registry unavailable"
         else:
@@ -101,6 +102,11 @@ def perform_scan(
                 prior_scan_user_id,
             ) = check_reuse(db, gtin14, serial, current_user_id)
 
+    # Resolved here rather than at read time, for the same reason as brand
+    # and category: reporting should never do geometry, and the scan records
+    # where it happened even if boundaries are redrawn later.
+    county = county_for(lat, lng)
+
     event = ScanEvent(
         id=uuid_str(),
         user_id=current_user_id,
@@ -113,6 +119,7 @@ def perform_scan(
         manufacturer_id=product.manufacturer_id if product else None,
         brand=product.brand if product else None,
         category=product.category if product else None,
+        county=county,
         first_scan_at=first_scan_at,
         prior_scan_at=prior_scan_at,
         prior_scan_user_id=prior_scan_user_id,
@@ -170,7 +177,7 @@ def scan_lookup_legacy(
     db: Session = Depends(get_db),
 ):
     """
-    Deprecated. A scan writes a row, so it must not be a GET — clients and
+    Deprecated. A scan writes a row, so it must not be a GET: clients and
     proxies retry GETs automatically, which duplicates scan events.
 
     Kept only for APK builds already in the field. Remove once those are gone.

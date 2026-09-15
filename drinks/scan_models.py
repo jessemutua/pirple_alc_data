@@ -36,11 +36,15 @@ class ScanEvent(Base):
     serial_result = Column(String, nullable=True)
 
     # Product context, denormalised at scan time. Reporting never joins to
-    # the catalogue, and a scan records what was true WHEN it happened —
-    # later deactivation or reassignment can't rewrite history.
+    # the catalogue, and a scan records what was true WHEN it happened:
+    # later deactivation or reassignment cannot rewrite history.
     manufacturer_id = Column(String, nullable=True)
     brand = Column(String, nullable=True)
     category = Column(String, nullable=True)
+
+    # Resolved from the coordinates at scan time. Null is normal: no
+    # coordinates, no boundary file, or a point outside every boundary.
+    county = Column(String, nullable=True)
 
     # snapshot of this serial's scan history at the moment of this scan,
     # used by the reuse rule without needing a separate query every time
@@ -62,4 +66,5 @@ class ScanEvent(Base):
         Index("ix_scan_events_gtin", "gtin"),
         Index("ix_scan_events_manufacturer_id", "manufacturer_id"),
         Index("ix_scan_events_created_at", "created_at"),
+        Index("ix_scan_events_county", "county"),
     )

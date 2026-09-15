@@ -10,6 +10,10 @@ Every generated scan is internally consistent: verified scans carry serials
 that really exist in the ledger, and registry_result / serial_result /
 auth_reason match the verdict the live endpoint would have produced.
 
+Times are chosen in local wall clock hours and stored in UTC, so the hour of
+day curve looks like people drinking in the evening rather than shifted by
+the UTC offset.
+
 Generated rows use a 'seed:' user_id prefix so --reset can remove exactly
 what this script created, leaving real scans untouched.
 """
@@ -28,6 +32,7 @@ from sqlalchemy import select  # noqa: E402
 from core.database import SessionLocal  # noqa: E402
 from drinks.scan_models import ScanEvent, uuid_str  # noqa: E402
 from products.models import Product, ProductSerial  # noqa: E402
+from reporting.service import REPORT_ZONE  # noqa: E402
 
 SEED_USER_PREFIX = "seed:"
 
@@ -49,9 +54,15 @@ AREAS = [
 # Counterfeiters target high-margin spirits far more than beer.
 CATEGORY_RISK = {"spirits": 1.9, "wine": 1.2, "rtd": 0.8, "beer": 0.45, "other": 1.0}
 
-# Share of scans from bottles with no serial printed yet — a plain EAN-13.
+# Share of scans from bottles with no serial printed yet, a plain EAN-13.
 # These are honestly unverifiable and must never read as verified.
 NO_SERIAL_RATE = 0.16
+
+# Local hours. Buying and drinking peak in the evening, quiet before noon.
+HOUR_WEIGHTS = [
+    3, 2, 1, 1, 1, 1, 2, 3, 4, 4, 5, 6,
+    8, 8, 7, 8, 10, 14, 18, 20, 17, 12, 8, 5,
+]
 
 USER_POOL_SIZE = 240
 JITTER_DEGREES = 0.012  # roughly 1.3 km
@@ -60,7 +71,7 @@ JITTER_DEGREES = 0.012  # roughly 1.3 km
 def load_catalogue(db):
     products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
     if not products:
-        print("no products — run scripts/seed_products.py first")
+        print("no products, run scripts/seed_products.py first")
         raise SystemExit(1)
 
     serials: dict[str, list[str]] = {}
@@ -86,28 +97,30 @@ def weighted_choice(items, key):
 
 
 def random_timestamp(days: int) -> datetime:
-    """Weighted toward evenings and weekends — when people actually buy."""
-    now = datetime.now(timezone.utc)
-    day_offset = random.randint(0, max(days - 1, 0))
-    when = now - timedelta(days=day_offset)
+    """
+    A local wall clock moment, returned in UTC.
 
-    # Weekend uplift: re-roll a weekday a third of the time.
+    The hour is chosen against local time, so reporting groups it into the
+    evening where it belongs rather than three hours later.
+    """
+    now_local = datetime.now(REPORT_ZONE)
+    day_offset = random.randint(0, max(days - 1, 0))
+    when = now_local - timedelta(days=day_offset)
+
+    # Weekend uplift, on the local weekday.
     if when.weekday() < 5 and random.random() < 0.33:
         when -= timedelta(days=random.randint(1, 3))
 
-    hour = random.choices(
-        population=list(range(24)),
-        weights=[1, 1, 1, 1, 1, 1, 2, 3, 3, 3, 4, 5,
-                 6, 6, 6, 7, 9, 13, 16, 18, 16, 12, 7, 3],
-        k=1,
-    )[0]
+    hour = random.choices(range(24), weights=HOUR_WEIGHTS, k=1)[0]
 
-    return when.replace(
+    local = when.replace(
         hour=hour,
         minute=random.randint(0, 59),
         second=random.randint(0, 59),
         microsecond=0,
     )
+
+    return local.astimezone(timezone.utc)
 
 
 def fabricated_serial() -> str:
@@ -148,7 +161,7 @@ def build_scan(product, serials, users, days) -> ScanEvent:
             prior_scan_at = prior_user = None
 
         elif random.random() < 0.6:
-            # Fabricated serial — a copied label with an invented number.
+            # Fabricated serial: a copied label with an invented number.
             serial = fabricated_serial()
             serial_result = "not_issued"
             status = "suspicious"
@@ -157,7 +170,7 @@ def build_scan(product, serials, users, days) -> ScanEvent:
             prior_scan_at = prior_user = None
 
         else:
-            # Cloned serial — a real number duplicated onto a fake.
+            # Cloned serial: a real number duplicated onto a fake.
             serial = random.choice(issued)
             serial_result = "issued"
             status = "suspicious"

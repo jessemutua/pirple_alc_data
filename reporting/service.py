@@ -551,3 +551,74 @@ def export_rows(
             "lat": row.location_lat if row.location_lat is not None else "",
             "lng": row.location_lng if row.location_lng is not None else "",
         }
+
+def counties(db: Session, manufacturer_id: str, rng: DateRange) -> dict:
+    """
+    Per-county totals for the national map.
+
+    Counties with no scans are absent rather than zero, so the map can render
+    them as "no data" instead of as a result. Scans with no county are
+    reported separately rather than silently dropped.
+    """
+    scans, verified, suspicious, unknown = _status_counts()
+
+    value_at_risk = func.coalesce(
+        func.sum(
+            case(
+                (ScanEvent.combined_auth_status == SUSPICIOUS, Product.unit_price),
+                else_=0,
+            )
+        ),
+        0,
+    ).label("value_at_risk")
+
+    rows = db.execute(
+        select(
+            ScanEvent.county,
+            scans,
+            verified,
+            suspicious,
+            unknown,
+            value_at_risk,
+        )
+        .outerjoin(Product, Product.gtin14 == ScanEvent.gtin)
+        .where(
+            ScanEvent.manufacturer_id == manufacturer_id,
+            *_in_range(rng.start, rng.end),
+            ScanEvent.county.isnot(None),
+        )
+        .group_by(ScanEvent.county)
+        .order_by(func.count().desc())
+    ).all()
+
+    untagged = db.scalar(
+        select(func.count())
+        .select_from(ScanEvent)
+        .where(
+            ScanEvent.manufacturer_id == manufacturer_id,
+            *_in_range(rng.start, rng.end),
+            ScanEvent.county.is_(None),
+        )
+    )
+
+    results = [
+        {
+            "county": row.county,
+            "scans": row.scans,
+            "verified": row.verified or 0,
+            "suspicious": row.suspicious or 0,
+            "unknown": row.unknown or 0,
+            "suspicious_rate": _rate(row.suspicious, row.scans),
+            "detected_value_at_risk": float(row.value_at_risk or 0),
+        }
+        for row in rows
+    ]
+
+    return {
+        "counties": results,
+        # Scans with no county: no coordinates, or a point outside every
+        # boundary. Shown so coverage is never overstated.
+        "untagged_scans": untagged or 0,
+        "max_suspicious": max((r["suspicious"] for r in results), default=0),
+        "max_scans": max((r["scans"] for r in results), default=0),
+    }

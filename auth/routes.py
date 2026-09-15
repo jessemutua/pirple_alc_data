@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from auth.models import User
 from auth.schemas import AuthPayload, AuthResponse
 from core.database import SessionLocal
+from core.ratelimit import LOGIN_LIMIT, REGISTER_LIMIT, limiter
 from core.security import hash_password, verify_password, create_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
 
 def serialize_user(user: User):
     return {
@@ -13,8 +15,11 @@ def serialize_user(user: User):
         "email": user.email,
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
+
+
 @router.post("/register", response_model=AuthResponse)
-def register(payload: AuthPayload):
+@limiter.limit(REGISTER_LIMIT)
+def register(request: Request, payload: AuthPayload):
     db = SessionLocal()
     try:
         with db.begin():
@@ -40,7 +45,8 @@ def register(payload: AuthPayload):
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(payload: AuthPayload):
+@limiter.limit(LOGIN_LIMIT)
+def login(request: Request, payload: AuthPayload):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == payload.email).first()

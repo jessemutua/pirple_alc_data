@@ -1,6 +1,8 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 
 import auth.routes as auth_routes
 import analytics.routes as analytics_routes
@@ -14,6 +16,7 @@ import reporting.routes as manufacturer_routes
 
 from core.config import DATABASE_URL
 from core.database import init_db
+from core.ratelimit import limiter
 import analytics.refresh_routes as refresh_routes
 
 
@@ -22,6 +25,11 @@ app = FastAPI(
     description="Privacy-first alcohol awareness API",
     version="1.0.0",
 )
+
+# Rate limiting is applied per endpoint, not globally: a blanket middleware
+# would also throttle the dashboard, which loads six panels at once.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = [
     o.strip()

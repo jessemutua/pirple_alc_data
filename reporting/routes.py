@@ -11,12 +11,13 @@ import io
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from core.ratelimit import LOGIN_LIMIT, limiter
 from core.security import verify_password
 from reporting import service
 from reporting.models import ManufacturerUser
@@ -71,7 +72,8 @@ class LoginPayload(BaseModel):
 
 
 @router.post("/auth/login")
-def login(payload: LoginPayload, db: Session = Depends(get_db)):
+@limiter.limit(LOGIN_LIMIT)
+def login(request: Request, payload: LoginPayload, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
 
     user = db.scalar(select(ManufacturerUser).where(ManufacturerUser.email == email))

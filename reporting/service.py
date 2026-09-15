@@ -24,7 +24,7 @@ from sqlalchemy import Numeric, case, cast, distinct, func, select
 from sqlalchemy.orm import Session
 
 from drinks.scan_models import ScanEvent
-from products.models import Product
+from products.models import Product, ProductSerial
 
 # Reporting timezone. Storage stays UTC; only presentation converts.
 REPORT_TZ = os.getenv("REPORT_TIMEZONE", "Africa/Nairobi")
@@ -622,3 +622,190 @@ def counties(db: Session, manufacturer_id: str, rng: DateRange) -> dict:
         "max_suspicious": max((r["suspicious"] for r in results), default=0),
         "max_scans": max((r["scans"] for r in results), default=0),
     }
+
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great circle distance, for spotting one serial appearing far apart."""
+    from math import asin, cos, radians, sin, sqrt
+
+    lat1, lng1 = radians(a[0]), radians(a[1])
+    lat2, lng2 = radians(b[0]), radians(b[1])
+
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlng / 2) ** 2
+    return 6371.0 * 2 * asin(sqrt(h))
+
+
+def serial_history(
+    db: Session,
+    manufacturer_id: str,
+    serial: str,
+    gtin: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Everything known about one serial.
+
+    Scoped to this manufacturer's own products: a serial belonging to someone
+    else returns None, which the route turns into a 404.
+
+    Consumer ids never leave this function. Each distinct scanner is labelled
+    by order of appearance within this serial's history, so "three different
+    people scanned this" survives without identifying anyone.
+    """
+    product_query = select(Product).where(Product.manufacturer_id == manufacturer_id)
+    if gtin:
+        product_query = product_query.where(Product.gtin14 == gtin)
+    else:
+        # No GTIN given: find it via the ledger.
+        owned = select(ProductSerial.gtin14).where(ProductSerial.serial == serial)
+        product_query = product_query.where(Product.gtin14.in_(owned))
+
+    product = db.scalar(product_query.limit(1))
+    if product is None:
+        return None
+
+    ledger = db.get(ProductSerial, (product.gtin14, serial))
+
+    scans = db.execute(
+        select(
+            ScanEvent.id,
+            ScanEvent.created_at,
+            ScanEvent.user_id,
+            ScanEvent.combined_auth_status,
+            ScanEvent.serial_result,
+            ScanEvent.auth_reason,
+            ScanEvent.county,
+            ScanEvent.location_lat,
+            ScanEvent.location_lng,
+        )
+        .where(
+            ScanEvent.serial == serial,
+            ScanEvent.gtin == product.gtin14,
+        )
+        .order_by(ScanEvent.created_at)
+    ).all()
+
+    # Stable per-serial labels, assigned in order of first appearance.
+    labels: dict[str, str] = {}
+    points: list[tuple[float, float]] = []
+    counties: set[str] = set()
+
+    events = []
+    for row in scans:
+        if row.user_id not in labels:
+            labels[row.user_id] = f"Scanner {len(labels) + 1}"
+
+        if row.location_lat is not None and row.location_lng is not None:
+            points.append((row.location_lat, row.location_lng))
+        if row.county:
+            counties.add(row.county)
+
+        events.append(
+            {
+                "id": row.id,
+                "scanned_at": row.created_at.astimezone(REPORT_ZONE).isoformat()
+                if row.created_at
+                else None,
+                "scanner": labels[row.user_id],
+                "status": row.combined_auth_status,
+                "serial_result": row.serial_result,
+                "reason": row.auth_reason,
+                "county": row.county,
+                "lat": row.location_lat,
+                "lng": row.location_lng,
+            }
+        )
+
+    spread_km = 0.0
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            spread_km = max(spread_km, _haversine_km(points[i], points[j]))
+
+    first = scans[0].created_at if scans else None
+    last = scans[-1].created_at if scans else None
+
+    return {
+        "serial": serial,
+        "product": {
+            "gtin": product.gtin14,
+            "brand": product.brand,
+            "name": product.product_name,
+            "category": product.category,
+        },
+        "ledger": {
+            "issued": ledger is not None,
+            "status": ledger.status if ledger else None,
+            "batch": ledger.batch if ledger else None,
+            "issued_at": ledger.issued_at.astimezone(REPORT_ZONE).isoformat()
+            if ledger and ledger.issued_at
+            else None,
+            "source": ledger.source if ledger else None,
+        },
+        "summary": {
+            "scans": len(events),
+            "scanners": len(labels),
+            "counties": sorted(counties),
+            "first_seen": first.astimezone(REPORT_ZONE).isoformat() if first else None,
+            "last_seen": last.astimezone(REPORT_ZONE).isoformat() if last else None,
+            # One bottle seen hundreds of km apart is not one bottle.
+            "spread_km": round(spread_km, 1),
+        },
+        "events": events,
+    }
+
+
+def top_serials(
+    db: Session, manufacturer_id: str, rng: DateRange, limit: int = 25
+) -> list[dict]:
+    """
+    Serials worth investigating, ranked by how many separate people and
+    places have seen them. A serial seen once is a bottle; a serial seen by
+    six people in four counties is a printing run.
+    """
+    scanners = func.count(distinct(ScanEvent.user_id)).label("scanners")
+    places = func.count(distinct(ScanEvent.county)).label("counties")
+    suspicious = func.sum(
+        case((ScanEvent.combined_auth_status == SUSPICIOUS, 1), else_=0)
+    ).label("suspicious")
+
+    rows = db.execute(
+        select(
+            ScanEvent.serial,
+            ScanEvent.gtin,
+            ScanEvent.brand,
+            func.count().label("scans"),
+            scanners,
+            places,
+            suspicious,
+            func.min(ScanEvent.created_at).label("first_seen"),
+            func.max(ScanEvent.created_at).label("last_seen"),
+        )
+        .where(
+            ScanEvent.manufacturer_id == manufacturer_id,
+            *_in_range(rng.start, rng.end),
+            ScanEvent.serial.isnot(None),
+        )
+        .group_by(ScanEvent.serial, ScanEvent.gtin, ScanEvent.brand)
+        .having(func.count() > 1)
+        .order_by(scanners.desc(), func.count().desc())
+        .limit(limit)
+    ).all()
+
+    return [
+        {
+            "serial": row.serial,
+            "gtin": row.gtin,
+            "brand": row.brand,
+            "scans": row.scans,
+            "scanners": row.scanners,
+            "counties": row.counties,
+            "suspicious": row.suspicious or 0,
+            "first_seen": row.first_seen.astimezone(REPORT_ZONE).isoformat()
+            if row.first_seen
+            else None,
+            "last_seen": row.last_seen.astimezone(REPORT_ZONE).isoformat()
+            if row.last_seen
+            else None,
+        }
+        for row in rows
+    ]

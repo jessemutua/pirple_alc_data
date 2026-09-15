@@ -306,3 +306,40 @@ def get_county_boundaries(
             detail="County boundaries are not configured",
         )
     return boundaries
+
+@router.get("/serials")
+def get_top_serials(
+    rng: DateRange = Depends(date_range),
+    limit: int = Query(25, ge=1, le=200),
+    context: ManufacturerContext = Depends(get_current_manufacturer),
+    db: Session = Depends(get_db),
+):
+    """Serials seen by several people or in several places, worth a look."""
+    return {
+        "period": rng.as_dict(),
+        "serials": service.top_serials(db, context.manufacturer_id, rng, limit),
+    }
+
+
+@router.get("/serial")
+def get_serial(
+    serial: str = Query(..., min_length=1, max_length=64),
+    gtin: Optional[str] = Query(None, max_length=14),
+    context: ManufacturerContext = Depends(get_current_manufacturer),
+    db: Session = Depends(get_db),
+):
+    """
+    One serial's full history.
+
+    A serial belonging to another manufacturer returns 404 rather than 403,
+    so this cannot be used to probe whether a serial exists elsewhere.
+    """
+    history = service.serial_history(
+        db, context.manufacturer_id, serial.strip(), gtin
+    )
+    if history is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such serial for your products",
+        )
+    return history

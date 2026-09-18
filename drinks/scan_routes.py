@@ -2,7 +2,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
@@ -27,6 +27,22 @@ STATUS_VERIFIED = "verified"
 STATUS_SUSPICIOUS = "suspicious"
 STATUS_UNKNOWN = "unknown"
 
+# A GS1 DataMatrix payload is a few dozen characters in practice. The cap is
+# generous enough for element strings and Digital Link URLs, and small enough
+# that the raw scan cannot be used to push arbitrary content into storage or
+# into a manufacturer's browser.
+MAX_BARCODE_LEN = 512
+
+# GS1 Application Identifier 21 is variable length up to 20 characters. The
+# character set here is narrower than GS1's own set 82: manufacturers control
+# what they print, so the conservative set costs nothing and keeps quoting
+# characters out of the reporting exports. Widen it if a real serial is
+# rejected.
+SERIAL_PATTERN = r"^[A-Za-z0-9\-_./]{1,20}$"
+
+# 8 for EAN-8 through 14 for ITF-14. Everything normalises to 14 downstream.
+GTIN_PATTERN = r"^\d{8,14}$"
+
 
 def get_db():
     db = SessionLocal()
@@ -37,13 +53,28 @@ def get_db():
 
 
 class ScanLookupRequest(BaseModel):
-    barcode: str
-    gtin: str
+    # An unexpected key is a client bug or someone probing, and silently
+    # dropping it hides both.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    barcode: str = Field(min_length=1, max_length=MAX_BARCODE_LEN)
+    gtin: str = Field(min_length=8, max_length=14, pattern=GTIN_PATTERN)
+
     # Optional: bottles carrying only a retail EAN-13 have no serial until
     # the manufacturer starts printing GS1 DataMatrix.
-    serial: Optional[str] = None
-    lat: Optional[float] = None
-    lng: Optional[float] = None
+    serial: Optional[str] = Field(default=None, max_length=20, pattern=SERIAL_PATTERN)
+
+    lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    lng: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+
+    @field_validator("serial", mode="before")
+    @classmethod
+    def empty_serial_is_none(cls, value):
+        # An unserialised bottle and an empty string mean the same thing, and
+        # only one of them should ever reach the ledger.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 def perform_scan(
@@ -175,11 +206,11 @@ def scan_lookup(
 
 @router.get("/lookup", deprecated=True)
 def scan_lookup_legacy(
-    barcode: str = Query(...),
-    gtin: str = Query(...),
-    serial: str = Query(None),
-    lat: float = Query(None),
-    lng: float = Query(None),
+    barcode: str = Query(..., min_length=1, max_length=MAX_BARCODE_LEN),
+    gtin: str = Query(..., min_length=8, max_length=14, pattern=GTIN_PATTERN),
+    serial: Optional[str] = Query(None, max_length=20, pattern=SERIAL_PATTERN),
+    lat: Optional[float] = Query(None, ge=-90.0, le=90.0),
+    lng: Optional[float] = Query(None, ge=-180.0, le=180.0),
     current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):

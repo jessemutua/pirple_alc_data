@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,18 @@ from reporting.security import (
 from reporting.service import DateRange, resolve_range
 
 router = APIRouter(prefix="/manufacturer", tags=["manufacturer"])
+
+# Same shape the scan endpoint accepts. A lookup can only ever be for a
+# serial that could have been scanned in the first place.
+SERIAL_PATTERN = r"^[A-Za-z0-9\-_./]{1,20}$"
+GTIN_PATTERN = r"^\d{8,14}$"
+
+# Spreadsheets execute a cell that opens with any of these, so a value is
+# prefixed with a quote before it reaches the file. The scan endpoint already
+# rejects most of them, but the export must stand on its own: it is opened on
+# a manufacturer's machine, and data written before that rule existed is
+# still in the table.
+CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 # Must match the keys yielded by service.export_rows.
 EXPORT_COLUMNS = [
@@ -51,6 +63,12 @@ EXPORT_COLUMNS = [
 ]
 
 
+def csv_safe(value):
+    if isinstance(value, str) and value[:1] in CSV_INJECTION_PREFIXES:
+        return "'" + value
+    return value
+
+
 def date_range(
     date_from: Optional[date] = Query(None, description="Local start date, inclusive"),
     date_to: Optional[date] = Query(None, description="Local end date, inclusive"),
@@ -68,8 +86,12 @@ def date_range(
 
 
 class LoginPayload(BaseModel):
-    email: EmailStr
-    password: str
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    email: EmailStr = Field(max_length=254)
+    # Bounded so an oversized body cannot be used to make the server hash
+    # megabytes on an unauthenticated route.
+    password: str = Field(min_length=1, max_length=128)
 
 
 @router.post("/auth/login")
@@ -263,7 +285,7 @@ def export_csv(
         buffer.truncate(0)
 
         for row in service.export_rows(db, context.manufacturer_id, rng):
-            writer.writerow(row)
+            writer.writerow({key: csv_safe(value) for key, value in row.items()})
             yield buffer.getvalue()
             buffer.seek(0)
             buffer.truncate(0)
@@ -276,6 +298,8 @@ def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
 @router.get("/counties")
 def get_counties(
     rng: DateRange = Depends(date_range),
@@ -307,6 +331,7 @@ def get_county_boundaries(
         )
     return boundaries
 
+
 @router.get("/serials")
 def get_top_serials(
     rng: DateRange = Depends(date_range),
@@ -323,8 +348,8 @@ def get_top_serials(
 
 @router.get("/serial")
 def get_serial(
-    serial: str = Query(..., min_length=1, max_length=64),
-    gtin: Optional[str] = Query(None, max_length=14),
+    serial: str = Query(..., min_length=1, max_length=20, pattern=SERIAL_PATTERN),
+    gtin: Optional[str] = Query(None, min_length=8, max_length=14, pattern=GTIN_PATTERN),
     context: ManufacturerContext = Depends(get_current_manufacturer),
     db: Session = Depends(get_db),
 ):

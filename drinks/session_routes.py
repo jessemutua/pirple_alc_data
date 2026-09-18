@@ -13,6 +13,7 @@ from drinks.session_schemas import (
     UpdateSessionPayload,
 )
 from drinks.scan_models import ScanEvent
+
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
@@ -37,10 +38,11 @@ def _derive_occurred_at(log_date: date, time_window: str) -> datetime:
     # Use UTC for MVP consistency
     return datetime.combine(log_date, time(hour=hour, minute=0, second=0, tzinfo=timezone.utc))
 
+
 def _resolve_item_auth(db, scan_event_id: str | None) -> tuple[str | None, str]:
     """
     Given an item's scan_event_id (if any), looks up the real ScanEvent
-    and returns (product_ref, auth_status) to store on the item —
+    and returns (product_ref, auth_status) to store on the item,
     never trusting a client-supplied auth_status directly.
     """
     if not scan_event_id:
@@ -48,7 +50,7 @@ def _resolve_item_auth(db, scan_event_id: str | None) -> tuple[str | None, str]:
 
     event = db.query(ScanEvent).filter(ScanEvent.id == scan_event_id).first()
     if not event:
-        # client sent a scan_event_id that doesn't exist — don't trust it
+        # client sent a scan_event_id that doesn't exist, don't trust it
         return None, "unknown"
 
     return event.gtin or event.barcode_raw, event.combined_auth_status
@@ -61,6 +63,8 @@ def _serialize_session(s: DrinkSession) -> dict:
         "occurred_at": s.occurred_at.isoformat(),
         "time_window": s.time_window,
         "source": s.source,
+        # Nothing writes this any more. Kept so sessions recorded before
+        # manual entry was removed still return what they hold.
         "notes": s.notes,
         "items": [
             {
@@ -120,8 +124,7 @@ def create_session(payload: CreateSessionPayload, user_id: str = Depends(get_cur
                 occurred_at=occurred_at,
                 log_date=log_date,
                 time_window=payload.time_window,
-                source=payload.source or "manual",
-                notes=payload.notes,
+                source=payload.source,
             )
             db.add(s)
             db.flush()
@@ -172,8 +175,7 @@ def create_sessions_batch(payload: BatchCreateSessionsPayload, user_id: str = De
                     occurred_at=occurred_at,
                     log_date=log_date,
                     time_window=p.time_window,
-                    source=p.source or "manual",
-                    notes=p.notes,
+                    source=p.source,
                 )
                 db.add(s)
                 db.flush()
@@ -235,12 +237,6 @@ def update_session(session_id: str, payload: UpdateSessionPayload, user_id: str 
 
             if payload.time_window is not None:
                 s.time_window = payload.time_window
-
-            if payload.source is not None:
-                s.source = payload.source
-
-            if payload.notes is not None:
-                s.notes = payload.notes
 
             # Replace items if provided
             if payload.items is not None:

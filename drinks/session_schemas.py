@@ -6,21 +6,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 TimeWindow = Literal["morning", "afternoon", "evening", "night", "late_night"]
 DrinkType = Literal["beer", "wine", "spirits", "other"]
-SourceType = Literal["manual", "scan"]
 
-# These mirror what the app can actually produce, so anything outside them is
-# a client that has been tampered with, not a user doing something unusual.
-#
-#   quantity : the highest bucket, "7+", resolves to 7, and a scan sends 1.
-#   items    : one per drink type, and there are four.
-#   sessions : one per time-of-day chip, and there are five.
-#   notes    : the note field is capped at 100 characters in the form.
-#
-# Widen these in step with the form, never ahead of it.
-MAX_QUANTITY_PER_ITEM = 7
-MAX_ITEMS_PER_SESSION = 4
-MAX_SESSIONS_PER_BATCH = 5
-MAX_NOTE_LEN = 100
+# Manual entry is gone. Every session originates from a scan, so the source
+# is no longer a choice the client gets to make.
+SourceType = Literal["scan"]
+
+# One scan is one bottle, recorded as one item in one session. These are not
+# arbitrary ceilings, they are the only shape the app can produce, and a
+# request outside them is a client that has been tampered with.
+MAX_SESSIONS_PER_BATCH = 1
 
 # A log cannot predate the app or happen tomorrow. One day of slack absorbs
 # device clocks and timezone edges.
@@ -44,10 +38,11 @@ class SessionItemPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     drink_type: DrinkType
-    # The form drops zero-quantity items before sending, so zero here would
-    # mean a row that says nothing.
-    quantity: int = Field(ge=1, le=MAX_QUANTITY_PER_ITEM)
-    scan_event_id: Optional[str] = Field(default=None, max_length=36)
+    # One scan, one bottle. Anything else means the client invented a number.
+    quantity: Literal[1] = 1
+    # A session with no scan behind it can no longer exist, so this is the
+    # link that makes the record trustworthy rather than an optional extra.
+    scan_event_id: str = Field(min_length=1, max_length=36)
 
 
 class CreateSessionPayload(BaseModel):
@@ -56,11 +51,8 @@ class CreateSessionPayload(BaseModel):
     occurred_at: Optional[datetime] = None
     log_date: Optional[str] = None
     time_window: TimeWindow
-    source: Optional[SourceType] = "manual"
-    notes: Optional[str] = Field(default=None, max_length=MAX_NOTE_LEN)
-    items: List[SessionItemPayload] = Field(
-        min_length=1, max_length=MAX_ITEMS_PER_SESSION
-    )
+    source: SourceType = "scan"
+    items: List[SessionItemPayload] = Field(min_length=1, max_length=1)
 
     @field_validator("log_date")
     @classmethod
@@ -103,8 +95,4 @@ class UpdateSessionPayload(BaseModel):
 
     occurred_at: Optional[datetime] = None
     time_window: Optional[TimeWindow] = None
-    notes: Optional[str] = Field(default=None, max_length=MAX_NOTE_LEN)
-    source: Optional[SourceType] = None
-    items: Optional[List[SessionItemPayload]] = Field(
-        default=None, max_length=MAX_ITEMS_PER_SESSION
-    )
+    items: Optional[List[SessionItemPayload]] = Field(default=None, max_length=1)

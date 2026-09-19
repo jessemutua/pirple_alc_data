@@ -1,7 +1,8 @@
 # drinks/scan_routes.py
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -9,7 +10,6 @@ from core.database import SessionLocal
 from core.geo import county_for
 from core.security import get_current_user_id
 from drinks.scan_models import ScanEvent, uuid_str
-from drinks.scan_reuse import check_reuse
 from products.adapters import (
     REGISTRY_REGISTERED,
     REGISTRY_UNREACHABLE,
@@ -19,13 +19,16 @@ from products.adapters import (
     to_gtin14,
     verify_serial,
 )
-from products.models import Manufacturer
+from products.models import Manufacturer, ProductSerial
+from verification.engine import (
+    STATUS_INVALID,
+    STATUS_UNKNOWN,
+    STATUS_VALID,
+    ScanContext,
+    evaluate,
+)
 
 router = APIRouter(prefix="/products", tags=["scan"])
-
-STATUS_VERIFIED = "verified"
-STATUS_SUSPICIOUS = "suspicious"
-STATUS_UNKNOWN = "unknown"
 
 # A GS1 DataMatrix payload is a few dozen characters in practice. The cap is
 # generous enough for element strings and Digital Link URLs, and small enough
@@ -34,14 +37,16 @@ STATUS_UNKNOWN = "unknown"
 MAX_BARCODE_LEN = 512
 
 # GS1 Application Identifier 21 is variable length up to 20 characters. The
-# character set here is narrower than GS1's own set 82: manufacturers control
-# what they print, so the conservative set costs nothing and keeps quoting
-# characters out of the reporting exports. Widen it if a real serial is
-# rejected.
+# character set is narrower than GS1's own set 82: manufacturers control what
+# they print, so the conservative set costs nothing.
 SERIAL_PATTERN = r"^[A-Za-z0-9\-_./]{1,20}$"
 
 # 8 for EAN-8 through 14 for ITF-14. Everything normalises to 14 downstream.
 GTIN_PATTERN = r"^\d{8,14}$"
+
+# You can only retire a seal you are holding, and you were holding it when
+# you scanned it. This stops anyone burning codes they have never seen.
+RETIRE_WINDOW_HOURS = 12
 
 
 def get_db():
@@ -53,28 +58,29 @@ def get_db():
 
 
 class ScanLookupRequest(BaseModel):
-    # An unexpected key is a client bug or someone probing, and silently
-    # dropping it hides both.
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     barcode: str = Field(min_length=1, max_length=MAX_BARCODE_LEN)
     gtin: str = Field(min_length=8, max_length=14, pattern=GTIN_PATTERN)
-
-    # Optional: bottles carrying only a retail EAN-13 have no serial until
-    # the manufacturer starts printing GS1 DataMatrix.
     serial: Optional[str] = Field(default=None, max_length=20, pattern=SERIAL_PATTERN)
-
     lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
     lng: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
 
     @field_validator("serial", mode="before")
     @classmethod
     def empty_serial_is_none(cls, value):
-        # An unserialised bottle and an empty string mean the same thing, and
-        # only one of them should ever reach the ledger.
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+
+class RetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    gtin: str = Field(min_length=8, max_length=14, pattern=GTIN_PATTERN)
+    serial: str = Field(min_length=1, max_length=20, pattern=SERIAL_PATTERN)
+    lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    lng: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
 
 
 def perform_scan(
@@ -87,8 +93,11 @@ def perform_scan(
     lng: Optional[float],
 ) -> dict:
     """
-    Registry -> serial ledger -> reuse. Each check's raw answer is stored
-    alongside the verdict so the reason behind a flag stays readable later.
+    Registry, then ledger, then the seal's own history.
+
+    Every branch writes a scan event, including the failures, because a
+    fabricated code found in a bar is exactly what the manufacturer wants
+    to know about.
     """
     # Normalise once. Lookup, ledger and reporting all use the 14-digit form
     # so the parser and the catalogue can never disagree.
@@ -97,45 +106,57 @@ def perform_scan(
     registry_result, product, raw_response = lookup_product(db, gtin)
 
     serial_result = SERIAL_UNKNOWN
+    auth_status = STATUS_UNKNOWN
     auth_reason = None
+    facts: dict = {}
+    features: dict = {}
     first_scan_at = prior_scan_at = prior_scan_user_id = None
     manufacturer = None
 
     if registry_result != REGISTRY_REGISTERED:
         if registry_result == REGISTRY_UNREACHABLE:
             # We could not check. Say so, never imply a pass.
-            auth_status = STATUS_UNKNOWN
-            auth_reason = "registry unavailable"
+            auth_reason = "the producer's records are unavailable right now"
         else:
-            auth_status = STATUS_SUSPICIOUS
-            auth_reason = "barcode not registered to any manufacturer"
+            auth_status = STATUS_INVALID
+            auth_reason = "this barcode is not registered to any manufacturer"
     else:
         manufacturer = db.get(Manufacturer, product.manufacturer_id)
-
         serial_result, serial_reason = verify_serial(db, product, serial)
 
         if serial_result == SERIAL_NOT_ISSUED:
-            auth_status = STATUS_SUSPICIOUS
-            auth_reason = serial_reason
+            auth_status = STATUS_INVALID
+            auth_reason = "this seal code was not issued for this product"
 
         elif serial_result == SERIAL_UNKNOWN:
-            # Known product, nothing verifiable about this bottle.
+            # Either the label carries no unique code, or we could not reach
+            # the manufacturer's own system. Neither is a pass.
             auth_status = STATUS_UNKNOWN
-            auth_reason = serial_reason
+            auth_reason = (
+                "this label carries no unique code"
+                if not serial
+                else serial_reason
+            )
 
         else:
-            # A genuine serial can still have been cloned onto a fake.
-            (
-                auth_status,
-                auth_reason,
-                first_scan_at,
-                prior_scan_at,
-                prior_scan_user_id,
-            ) = check_reuse(db, gtin14, serial, current_user_id)
+            verdict = evaluate(
+                db,
+                ScanContext(
+                    gtin14=gtin14,
+                    serial=serial,
+                    user_id=current_user_id,
+                    lat=lat,
+                    lng=lng,
+                ),
+            )
+            auth_status = verdict.status
+            auth_reason = verdict.reason
+            facts = verdict.facts
+            features = verdict.features
+            first_scan_at = verdict.first_scan_at
+            prior_scan_at = verdict.prior_scan_at
+            prior_scan_user_id = verdict.prior_scan_user_id
 
-    # Resolved here rather than at read time, for the same reason as brand
-    # and category: reporting should never do geometry, and the scan records
-    # where it happened even if boundaries are redrawn later.
     county = county_for(lat, lng)
 
     event = ScanEvent(
@@ -156,6 +177,9 @@ def perform_scan(
         prior_scan_user_id=prior_scan_user_id,
         combined_auth_status=auth_status,
         auth_reason=auth_reason,
+        risk_score=100.0 if auth_status == STATUS_INVALID else 0.0,
+        risk_reasons=[auth_reason] if auth_reason else None,
+        scan_features=features or None,
         location_lat=lat,
         location_lng=lng,
     )
@@ -163,16 +187,17 @@ def perform_scan(
     db.commit()
     db.refresh(event)
 
-    # The product details are only established fact when the whole chain
-    # passed. A fabricated serial usually means the barcode was copied too,
-    # so naming the product there would assert something we do not know.
-    # Anything else is what the label CLAIMS to be.
-    product_verified = auth_status == STATUS_VERIFIED
+    # The product name is established fact only when the seal checks out. A
+    # code that was never issued usually means the barcode was copied too,
+    # so naming the product there asserts something we do not know.
+    seal_ok = auth_status == STATUS_VALID
 
     return {
         "scan_event_id": event.id,
-        "auth_status": auth_status,
+        "status": auth_status,
+        "auth_status": auth_status,  # kept until the app update lands
         "auth_reason": auth_reason,
+        "facts": facts,
         "product": (
             {
                 "brand": product.brand,
@@ -182,7 +207,8 @@ def perform_scan(
             if product
             else None
         ),
-        "product_verified": product_verified,
+        "product_verified": seal_ok,
+        "can_retire": seal_ok and bool(serial),
         "scanned_at": event.created_at.isoformat() if event.created_at else None,
     }
 
@@ -204,6 +230,59 @@ def scan_lookup(
     )
 
 
+@router.post("/retire")
+def retire_seal(
+    payload: RetireRequest,
+    current_user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    The bottle was opened, so this seal no longer exists in the world.
+
+    One way only. A broken seal cannot be unbroken, and an undo is the first
+    thing a counterfeiter would reach for.
+    """
+    gtin14 = to_gtin14(payload.gtin)
+    row = db.get(ProductSerial, (gtin14, payload.serial))
+
+    if row is None:
+        raise HTTPException(http.HTTP_404_NOT_FOUND, "No such seal code")
+
+    # You can only retire a seal you were holding, and you were holding it
+    # when you scanned it.
+    since = datetime.now(timezone.utc) - timedelta(hours=RETIRE_WINDOW_HOURS)
+    held = (
+        db.query(ScanEvent)
+        .filter(ScanEvent.serial == payload.serial)
+        .filter(ScanEvent.gtin == gtin14)
+        .filter(ScanEvent.user_id == current_user_id)
+        .filter(ScanEvent.created_at >= since)
+        .first()
+    )
+    if held is None:
+        raise HTTPException(
+            http.HTTP_403_FORBIDDEN,
+            "Scan this bottle before marking it opened",
+        )
+
+    if row.retired_at is not None:
+        # Already done. Saying so is friendlier than an error, and repeating
+        # the action must never move the timestamp.
+        return {
+            "retired": True,
+            "retired_at": row.retired_at.isoformat(),
+            "already": True,
+        }
+
+    row.retired_at = datetime.now(timezone.utc)
+    row.retired_by = current_user_id
+    row.retired_lat = payload.lat
+    row.retired_lng = payload.lng
+    db.commit()
+
+    return {"retired": True, "retired_at": row.retired_at.isoformat(), "already": False}
+
+
 @router.get("/lookup", deprecated=True)
 def scan_lookup_legacy(
     barcode: str = Query(..., min_length=1, max_length=MAX_BARCODE_LEN),
@@ -217,8 +296,6 @@ def scan_lookup_legacy(
     """
     Deprecated. A scan writes a row, so it must not be a GET: clients and
     proxies retry GETs automatically, which duplicates scan events.
-
-    Kept only for APK builds already in the field. Remove once those are gone.
     """
     return perform_scan(
         db=db,

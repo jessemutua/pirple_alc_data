@@ -1,7 +1,7 @@
 # drinks/scan_models.py
 import uuid
 
-from sqlalchemy import Column, String, DateTime, Float, Index
+from sqlalchemy import Column, String, DateTime, Float, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -14,6 +14,12 @@ def uuid_str() -> str:
 
 REGISTRY_RESULTS = ("registered", "not_found", "unreachable")
 SERIAL_RESULTS = ("issued", "not_issued", "unknown")
+
+# Only three, and each is a thing we can defend. "verified" means a valid
+# manufacturer-issued seal, not a claim about the liquid. Nothing in
+# between: telling somebody their real bottle is fake is the error that
+# costs a manufacturer trust, and we have no data yet with which to justify
+# taking that risk.
 AUTH_STATUSES = ("unknown", "verified", "suspicious")
 
 
@@ -46,14 +52,23 @@ class ScanEvent(Base):
     # coordinates, no boundary file, or a point outside every boundary.
     county = Column(String, nullable=True)
 
-    # snapshot of this serial's scan history at the moment of this scan,
-    # used by the reuse rule without needing a separate query every time
+    # Snapshot of this code's history at the moment of this scan.
     first_scan_at = Column(DateTime(timezone=True), nullable=True)
     prior_scan_at = Column(DateTime(timezone=True), nullable=True)
     prior_scan_user_id = Column(String, nullable=True)
 
     combined_auth_status = Column(String, nullable=False, default="unknown")
     auth_reason = Column(String, nullable=True)
+
+    # What the manufacturer sees, which is not what the consumer is told.
+    risk_score = Column(Float, nullable=False, default=0.0)
+    risk_reasons = Column(JSONB, nullable=True)
+
+    # Everything the next version of the algorithm will need, recorded on
+    # every scan whether or not anything reads it today. Without this there
+    # is no way to measure real baselines later, and every threshold stays
+    # a guess.
+    scan_features = Column(JSONB, nullable=True)
 
     location_lat = Column(Float, nullable=True)
     location_lng = Column(Float, nullable=True)
@@ -67,4 +82,9 @@ class ScanEvent(Base):
         Index("ix_scan_events_manufacturer_id", "manufacturer_id"),
         Index("ix_scan_events_created_at", "created_at"),
         Index("ix_scan_events_county", "county"),
+        Index(
+            "ix_scan_events_risk_score",
+            text("risk_score DESC"),
+            text("created_at DESC"),
+        ),
     )

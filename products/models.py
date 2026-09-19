@@ -2,7 +2,7 @@
 import uuid
 
 from sqlalchemy import (
-    Column, String, Integer, Numeric, Boolean, DateTime,
+    Column, String, Integer, Numeric, Boolean, DateTime, Float,
     ForeignKey, ForeignKeyConstraint, Index, PrimaryKeyConstraint,
 )
 from sqlalchemy.sql import func
@@ -55,7 +55,7 @@ class Manufacturer(Base):
 class Product(Base):
     __tablename__ = "products"
 
-    # The barcode is the natural identity. Always 14 digits, zero-padded —
+    # The barcode is the natural identity. Always 14 digits, zero-padded,
     # this is what keeps the GS1 parser and the catalogue in agreement.
     gtin14 = Column(String(14), primary_key=True)
 
@@ -68,12 +68,12 @@ class Product(Base):
     category = Column(String, nullable=False)
     volume_ml = Column(Integer, nullable=True)
 
-    # What the manufacturer sells the unit for — ex-factory or trade price.
+    # What the manufacturer sells the unit for, ex-factory or trade price.
     # This is the basis for counterfeit exposure: it's the revenue actually
     # diverted per bottle, and the figure a manufacturer already records.
     unit_price = Column(Numeric(12, 2), nullable=True)
 
-    # Shelf price. A different number, owned by a different party — kept
+    # Shelf price. A different number, owned by a different party, kept
     # separate so exposure is never silently inflated by retail margin.
     retail_price = Column(Numeric(12, 2), nullable=True)
 
@@ -111,9 +111,22 @@ class ProductSerial(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
+    # The code is printed on the tamper seal, so opening the bottle destroys
+    # it. When somebody tells us they opened it, that seal stops existing in
+    # the world, and any later scan of this code is a different seal.
+    #
+    # One way only. There is no un-retire, because a broken seal cannot be
+    # unbroken, and an undo would be the obvious thing for a counterfeiter
+    # to reach for.
+    retired_at = Column(DateTime(timezone=True), nullable=True)
+    retired_by = Column(String, nullable=True)
+    retired_lat = Column(Float, nullable=True)
+    retired_lng = Column(Float, nullable=True)
+
     __table_args__ = (
         # GS1 guarantees serial uniqueness only WITHIN a GTIN.
         PrimaryKeyConstraint("gtin14", "serial"),
         ForeignKeyConstraint(["gtin14"], ["products.gtin14"]),
         Index("ix_product_serials_gtin14", "gtin14"),
+        Index("ix_product_serials_retired_at", "retired_at"),
     )

@@ -1,9 +1,12 @@
+# analytics/service.py
 from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date as date_type, timedelta
 from statistics import mean
 from typing import Any, Dict, List, Set
+
+from drinks.drink_types import DRINK_TYPES, normalise_drink_type
 
 
 def _date_range(from_date: date_type, to_date: date_type) -> List[date_type]:
@@ -65,7 +68,9 @@ def build_user_analytics(
 
             qty_by_day[d] += qty_int
 
-            dt = str(getattr(it, "drink_type", "other")).strip().lower()
+            # One vocabulary everywhere. Anything unrecognised is "other",
+            # so a stray value can never become its own slice of the chart.
+            dt = normalise_drink_type(getattr(it, "drink_type", None))
             drink_types[dt] += qty_int
 
     daily = []
@@ -130,7 +135,9 @@ def build_user_analytics(
     for k in ["morning", "afternoon", "evening", "night", "late_night"]:
         time_pattern.setdefault(k, 0)
 
-    for k in ["beer", "wine", "spirits", "other"]:
+    # Every type is present, zero or not, so the response shape never
+    # depends on what someone happened to drink.
+    for k in DRINK_TYPES:
         drink_types.setdefault(k, 0)
 
     return {

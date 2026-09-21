@@ -8,6 +8,7 @@ from sqlalchemy import (
 from sqlalchemy.sql import func
 
 from core.database import Base
+from drinks.drink_types import DRINK_TYPES
 
 
 def uuid_str() -> str:
@@ -23,7 +24,9 @@ SOURCES = ("seed", "feed", "api")
 #   api    -> call their system live on every scan
 VERIFICATION_MODES = ("ledger", "api")
 
-CATEGORIES = ("beer", "wine", "spirits", "rtd", "other")
+# A product's category is the drink type a valid scan logs, so both use the
+# one vocabulary. "spirits" stays for products not yet categorised further.
+CATEGORIES = DRINK_TYPES
 
 SERIAL_STATUSES = ("issued", "recalled")
 
@@ -65,6 +68,9 @@ class Product(Base):
 
     brand = Column(String, nullable=False)
     product_name = Column(String, nullable=False)
+
+    # One of CATEGORIES. This is what a valid scan logs as the drink type,
+    # so the ledger, not the person holding the bottle, decides it.
     category = Column(String, nullable=False)
     volume_ml = Column(Integer, nullable=True)
 

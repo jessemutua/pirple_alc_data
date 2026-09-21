@@ -1,11 +1,17 @@
+# drinks/session_schemas.py
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import List, Optional, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from drinks.drink_types import DRINK_TYPES
+
 
 TimeWindow = Literal["morning", "afternoon", "evening", "night", "late_night"]
-DrinkType = Literal["beer", "wine", "spirits", "other"]
+
+# Built from the shared vocabulary so the request, the model and the
+# database constraint can never accept different values.
+DrinkType = Literal[DRINK_TYPES]  # type: ignore[valid-type]
 
 # Manual entry is gone. Every session originates from a scan, so the source
 # is no longer a choice the client gets to make.
@@ -37,6 +43,8 @@ def _check_log_date(value: str) -> str:
 class SessionItemPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    # The client's choice. For a valid scan the server replaces it with the
+    # ledger's answer, so this only stands when there is nothing to check.
     drink_type: DrinkType
     # One scan, one bottle. Anything else means the client invented a number.
     quantity: Literal[1] = 1

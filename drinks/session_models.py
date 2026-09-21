@@ -1,3 +1,4 @@
+# drinks/session_models.py
 import uuid
 
 from sqlalchemy import (
@@ -14,6 +15,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from core.database import Base
+from drinks.drink_types import DRINK_TYPES
 
 
 def uuid_str() -> str:
@@ -21,8 +23,11 @@ def uuid_str() -> str:
 
 
 TIME_WINDOWS = ("morning", "afternoon", "evening", "night", "late_night")
+
+# "manual" stays valid for sessions recorded before manual entry was
+# removed. Nothing new can be written with it.
 SOURCES = ("manual", "scan")
-DRINK_TYPES = ("beer", "wine", "spirits", "other")
+
 AUTH_STATUSES = ("unknown", "verified", "suspicious")
 
 
@@ -79,18 +84,23 @@ class DrinkSessionItem(Base):
         nullable=False,
     )
 
+    # One of DRINK_TYPES. For a valid scan the server fills this from the
+    # ledger, so the client's choice only counts when there is no ledger
+    # answer to take.
     drink_type = Column(String, nullable=False)
     quantity = Column(Integer, nullable=False)
 
     product_ref = Column(String, nullable=True)
     auth_status = Column(String, nullable=False, default="unknown")
     scan_event_id = Column(String, ForeignKey("scan_events.id"), nullable=True)
-        
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     session = relationship("DrinkSession", back_populates="items")
 
     __table_args__ = (
+        # Mirrors migrate_006_drink_types.sql. The two must list the same
+        # values, and both come from drinks/drink_types.py.
         CheckConstraint(
             f"drink_type IN {DRINK_TYPES}",
             name="ck_drink_session_items_drink_type",

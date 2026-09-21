@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from core.database import SessionLocal
 from core.geo import county_for
 from core.security import get_current_user_id
+from drinks.drink_types import normalise_drink_type
 from drinks.scan_models import ScanEvent, uuid_str
 from products.adapters import (
     REGISTRY_REGISTERED,
@@ -114,12 +115,13 @@ def perform_scan(
     manufacturer = None
 
     if registry_result != REGISTRY_REGISTERED:
+        # Neither case is a pass, and neither is evidence of a fake. A brand
+        # that has not joined Limi has nothing on file to check against, and
+        # flagging it would accuse every product whose maker is not a client.
         if registry_result == REGISTRY_UNREACHABLE:
-            # We could not check. Say so, never imply a pass.
             auth_reason = "the producer's records are unavailable right now"
         else:
-            auth_status = STATUS_INVALID
-            auth_reason = "this barcode is not registered to any manufacturer"
+            auth_reason = "this brand isn't on Limi yet, so there is nothing to check it against"
     else:
         manufacturer = db.get(Manufacturer, product.manufacturer_id)
         serial_result, serial_reason = verify_serial(db, product, serial)
@@ -170,6 +172,8 @@ def perform_scan(
         manufacturer_raw_response=raw_response,
         manufacturer_id=product.manufacturer_id if product else None,
         brand=product.brand if product else None,
+        # The ledger's drink type for this product. Logging a valid scan
+        # reads it back from here, never from the client.
         category=product.category if product else None,
         county=county,
         first_scan_at=first_scan_at,
@@ -203,6 +207,9 @@ def perform_scan(
                 "brand": product.brand,
                 "name": product.product_name,
                 "manufacturer": manufacturer.name if manufacturer else None,
+                # What a valid code logs as. Shown by the app, but the log
+                # itself takes it from the scan event on the server.
+                "drink_type": normalise_drink_type(product.category),
             }
             if product
             else None

@@ -166,15 +166,33 @@ def _build_items(db: Session, user_id: str, rows) -> list:
 def list_activity(
     limit: int = Query(DEFAULT_PAGE, ge=1, le=MAX_PAGE),
     before: Optional[str] = Query(None, max_length=64),
+    verdict: Optional[Literal["verified", "unverified"]] = Query(None),
+    days: Optional[int] = Query(None, ge=1, le=365),
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """The person's own scans, newest first."""
+    """
+    The person's own scans, newest first.
+
+    verdict: "verified" is a valid code, "unverified" is everything else,
+    whether the code failed or there was nothing to check it against.
+    days: only scans from the last N days.
+    """
     query = (
         db.query(ScanEvent, Product.product_name)
         .outerjoin(Product, Product.gtin14 == ScanEvent.gtin)
         .filter(ScanEvent.user_id == user_id)
     )
+
+    if verdict == "verified":
+        query = query.filter(ScanEvent.combined_auth_status == "verified")
+    elif verdict == "unverified":
+        query = query.filter(ScanEvent.combined_auth_status != "verified")
+
+    if days is not None:
+        query = query.filter(
+            ScanEvent.created_at >= datetime.now(timezone.utc) - timedelta(days=days)
+        )
 
     if before:
         moment, event_id = _parse_cursor(before)

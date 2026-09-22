@@ -11,8 +11,10 @@ import drinks.session_routes as sessions_routes
 import drinks.calendar_routes as calendar_routes
 import drinks.sober_routes as sober_routes
 import drinks.scan_routes as scan_routes
+import drinks.activity_routes as activity_routes
 
 import reporting.routes as manufacturer_routes
+import reporting.report_routes as manufacturer_report_routes
 
 from core.config import DATABASE_URL
 from core.database import init_db
@@ -52,7 +54,9 @@ app.include_router(analytics_routes.router)
 app.include_router(sober_routes.router)
 app.include_router(refresh_routes.router)
 app.include_router(scan_routes.router)
+app.include_router(activity_routes.router)
 app.include_router(manufacturer_routes.router)
+app.include_router(manufacturer_report_routes.router)
 
 
 @app.on_event("startup")

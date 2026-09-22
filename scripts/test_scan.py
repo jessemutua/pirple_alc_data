@@ -1,17 +1,22 @@
 # scripts/test_scan.py
 """
-End-to-end test of the scan verdict logic.
+End-to-end test of the scan verdicts, against the rules in
+verification/engine.py.
 
 Requires the API running:  uvicorn main:app --reload
 
     python scripts/test_scan.py
     API_BASE=https://your-service.onrender.com python scripts/test_scan.py
 
-The clone case only fires when a DIFFERENT user scanned the same serial at
-least SCAN_REUSE_OTHER_USER_MIN_GAP_HOURS ago. To exercise it without
-waiting, start the server with that set to 0:
+It picks never-scanned seals straight from the database, so DATABASE_URL in
+your .env must point at the same database as the API you are testing.
 
-    SCAN_REUSE_OTHER_USER_MIN_GAP_HOURS=0 uvicorn main:app --reload
+It writes real rows there: two throwaway accounts, a handful of scan
+events, and one seeded seal that it marks as opened (retired). Point it at
+a local database if you would rather production stayed untouched.
+
+No settings to change first. The engine judges a clone by distance, not by
+waiting, so the clone case just scans from far enough away.
 """
 import json
 import os
@@ -33,6 +38,13 @@ from products.models import Product, ProductSerial  # noqa: E402
 API_BASE = os.getenv("API_BASE", "http://localhost:8000").rstrip("/")
 PASSWORD = "testpass1234"
 
+# Where each scan happens. The engine treats two fixes more than 500 m apart
+# as different places, and anything within 300 m as the same table.
+NAIROBI_CBD = (-1.2921, 36.8219)
+SAME_TABLE = (-1.2925, 36.8221)   # about 50 m from the CBD point
+WESTLANDS = (-1.2676, 36.8108)    # about 3 km from the CBD point
+MOMBASA = (-4.0435, 39.6682)      # about 440 km away
+
 
 def call(path: str, payload: dict, token: str = None) -> dict:
     request = urllib.request.Request(
@@ -50,7 +62,7 @@ def call(path: str, payload: dict, token: str = None) -> dict:
     except urllib.error.HTTPError as exc:
         return {"_http_error": exc.code, "_body": exc.read().decode()[:300]}
     except urllib.error.URLError as exc:
-        print(f"\nCannot reach {API_BASE} — is the server running?\n{exc.reason}")
+        print(f"\nCannot reach {API_BASE}. Is the server running?\n{exc.reason}")
         raise SystemExit(1)
 
 
@@ -66,114 +78,137 @@ def new_account() -> str:
     return token
 
 
-def genuine_pair() -> tuple[str, str]:
+def fresh_seals(count: int) -> list[tuple[str, str]]:
     """
-    A real GTIN and issued serial with NO scan history.
+    Issued, unopened seals on active products that nobody has ever scanned.
 
-    Seeded scan data backdates months of activity, so any serial that has
-    already been scanned will legitimately trip the reuse rules. The genuine
-    case needs a bottle nobody has ever scanned.
+    Seeded scan data backdates months of activity, so a seal with history
+    could legitimately come back flagged. Each case needs its own clean one.
     """
     db = SessionLocal()
     try:
-        row = db.execute(
+        rows = db.execute(
             select(ProductSerial.gtin14, ProductSerial.serial)
             .join(Product, Product.gtin14 == ProductSerial.gtin14)
             .where(
+                Product.is_active.is_(True),
                 ProductSerial.status == "issued",
+                ProductSerial.retired_at.is_(None),
                 ~exists().where(
                     ScanEvent.serial == ProductSerial.serial,
                     ScanEvent.gtin == ProductSerial.gtin14,
                 ),
             )
-            .limit(1)
-        ).first()
+            .limit(count)
+        ).all()
     finally:
         db.close()
 
-    if row is None:
+    if len(rows) < count:
         print(
-            "no unscanned serials left — reseed with:\n"
+            f"need {count} unscanned seals, found {len(rows)}. Reseed with:\n"
             "  python scripts/seed_products.py --serials 400"
         )
         raise SystemExit(1)
-    return row[0], row[1]
+    return [(row[0], row[1]) for row in rows]
 
 
-def scan(token: str, gtin: str, serial: str = None, barcode: str = None) -> dict:
+def scan(token: str, gtin: str, serial: str = None, where=NAIROBI_CBD, barcode: str = None) -> dict:
+    lat, lng = where
     return call(
         "/products/lookup",
         {
             "barcode": barcode or f"01{gtin}21{serial or ''}",
             "gtin": gtin,
             "serial": serial,
-            "lat": -1.2921,
-            "lng": 36.8219,
+            "lat": lat,
+            "lng": lng,
         },
+        token,
+    )
+
+
+def retire(token: str, gtin: str, serial: str, where=NAIROBI_CBD) -> dict:
+    lat, lng = where
+    return call(
+        "/products/retire",
+        {"gtin": gtin, "serial": serial, "lat": lat, "lng": lng},
         token,
     )
 
 
 def report(label: str, expected: str, result: dict) -> bool:
     if "_http_error" in result:
-        print(f"  FAIL  {label:28} HTTP {result['_http_error']}  {result['_body']}")
+        print(f"  FAIL  {label:34} HTTP {result['_http_error']}  {result['_body']}")
         return False
 
-    got = result.get("auth_status")
+    # "status" is the current field. "auth_status" is the old name, kept by
+    # the API until every app has updated.
+    got = str(result.get("status") or result.get("auth_status"))
     ok = got == expected
     reason = result.get("auth_reason") or "-"
-    product = (result.get("product") or {}).get("name", "-")
 
-    print(f"  {'PASS' if ok else 'FAIL':5} {label:28} {got:11} {reason}")
-    if ok and product != "-":
-        print(f"        {'':28} product: {product}")
+    print(f"  {'PASS' if ok else 'FAIL':5} {label:34} {got:11} {reason}")
     return ok
 
 
 def main() -> int:
-    gtin, serial = genuine_pair()
+    (g1, s1), (g2, s2), (g3, s3) = fresh_seals(3)
     print(f"api     : {API_BASE}")
-    print(f"testing : {gtin} / {serial}\n")
+    print(f"seals   : {g1}/{s1}, {g2}/{s2}, {g3}/{s3}\n")
 
     user_a = new_account()
     user_b = new_account()
 
     results = []
 
-    # 1. Genuine product, issued serial, never scanned.
+    # 1. An issued seal nobody has scanned.
+    results.append(report("valid seal", "verified", scan(user_a, g1, s1)))
+
+    # 2. The same person again, 3 km away. Shop, then home: never a clone.
     results.append(
-        report("genuine serial", "verified", scan(user_a, gtin, serial))
+        report("same person, 3 km away", "verified", scan(user_a, g1, s1, WESTLANDS))
     )
 
-    # 2. Same serial, different user — a cloned label.
+    # 3. Somebody else, 440 km away. One code on two bottles.
     results.append(
-        report("cloned serial (user B)", "suspicious", scan(user_b, gtin, serial))
+        report("other person, 440 km away", "suspicious", scan(user_b, g1, s1, MOMBASA))
     )
 
-    # 3. Real product, serial the manufacturer never issued.
+    # 4. Two people at one table, on a fresh seal. A shared bottle, not a clone.
+    scan(user_a, g2, s2, NAIROBI_CBD)
     results.append(
-        report("fabricated serial", "suspicious", scan(user_a, gtin, "FAKE000001"))
+        report("other person, same table", "verified", scan(user_b, g2, s2, SAME_TABLE))
     )
 
-    # 4. Plain retail barcode — product known, bottle unverifiable.
+    # 5. Opened, then scanned again. The seal in hand cannot be the original.
+    scan(user_a, g3, s3)
+    retired = retire(user_a, g3, s3)
+    if not retired.get("retired"):
+        print(f"  FAIL  {'retire the seal':34} {retired}")
+        results.append(False)
+    else:
+        results.append(
+            report("scanned after opening", "suspicious", scan(user_a, g3, s3))
+        )
+
+    # 6. A real product with a seal code the manufacturer never issued.
     results.append(
-        report("no serial (plain EAN)", "unknown", scan(user_a, gtin, None, barcode=gtin))
+        report("seal never issued", "suspicious", scan(user_a, g1, "FAKE000001"))
     )
 
-    # 5. Barcode belonging to no registered manufacturer.
+    # 7. A plain retail barcode: the product is known, the bottle is not.
     results.append(
-        report("unregistered barcode", "suspicious", scan(user_a, "09999999999993", "XYZ123"))
+        report("no seal code (plain EAN)", "unknown", scan(user_a, g1, None, barcode=g1))
+    )
+
+    # 8. A brand not on Limi. Nothing to check against, so no verdict.
+    results.append(
+        report("brand not on Limi", "unknown", scan(user_a, "09999999999993", "XYZ123"))
     )
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
-
-    if not results[1]:
-        print(
-            "\nnote: the clone case needs a different user and a time gap.\n"
-            "      restart the server with SCAN_REUSE_OTHER_USER_MIN_GAP_HOURS=0"
-        )
-
     return 0 if passed == len(results) else 1
 
 

@@ -52,8 +52,30 @@ AREAS = [
 ]
 
 # Counterfeiters target high-margin spirits far more than beer.
-CATEGORY_RISK = {"spirits": 1.9, "wine": 1.2, "rtd": 0.8, "beer": 0.45, "other": 1.0}
+from drinks.drink_types import DRINK_TYPES  # noqa: E402
 
+# Counterfeiters target high-margin spirits far more than beer. Every spirit
+# type shares one weight, and cider sits with the ready-to-drinks.
+SPIRIT_RISK = 1.9
+CATEGORY_RISK = {
+    "whisky": SPIRIT_RISK,
+    "vodka": SPIRIT_RISK,
+    "gin": SPIRIT_RISK,
+    "brandy": SPIRIT_RISK,
+    "rum": SPIRIT_RISK,
+    "liqueur": SPIRIT_RISK,
+    "spirits": SPIRIT_RISK,  # legacy type, kept for older rows
+    "wine": 1.2,
+    "rtd": 0.8,
+    "cider": 0.8,
+    "beer": 0.45,
+    "other": 1.0,
+}
+
+# A drink type with no weight would silently fall back to 1.0.
+_unweighted = set(DRINK_TYPES) - set(CATEGORY_RISK)
+if _unweighted:
+    raise SystemExit(f"CATEGORY_RISK has no weight for: {', '.join(sorted(_unweighted))}")
 # Share of scans from bottles with no serial printed yet, a plain EAN-13.
 # These are honestly unverifiable and must never read as verified.
 NO_SERIAL_RATE = 0.16
